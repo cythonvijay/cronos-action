@@ -1,119 +1,12 @@
 name: "CRONOS Code Guard"
-description: "AI-powered static analysis for Python code changes with AST-based risk detection"
-author: "cythonvijay"
-
-branding:
-  icon: "shield"
-  color: "purple"
-
+description: "Static change-risk analysis using CRONOS API"
 inputs:
   api_url:
-    description: "CRONOS API endpoint URL (your Render deployment URL)"
     required: true
-    default: "https://your-app.onrender.com"
-  
-  mode:
-    description: "Analysis mode: STRICT (blocks any semantic change), BOUNDARY (allows >, >= changes), CONTRACT (allows minor changes)"
-    required: false
-    default: "STRICT"
-  
-  python-version:
-    description: "Python version to use for analysis"
-    required: false
-    default: "3.11"
-  
-  fail-on-error:
-    description: "Whether to fail the workflow on FAIL status"
-    required: false
-    default: "true"
-
-outputs:
-  status:
-    description: "Final analysis status: PASS, WARN, or FAIL"
-    value: ${{ steps.cronos-analysis.outputs.status }}
-  
-  risk-score:
-    description: "Risk score from analysis (0-100)"
-    value: ${{ steps.cronos-analysis.outputs.risk }}
-  
-  reports-path:
-    description: "Path to generated analysis reports"
-    value: "cronos-reports"
+    description: "Base URL of CRONOS API (no trailing slash)"
 
 runs:
-  using: "composite"
-  steps:
-    # Step 1: Checkout with full history (CRITICAL for git diff)
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        token: ${{ github.token }}
-    
-    # Step 2: Setup Python
-    - name: Setup Python ${{ inputs.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ inputs.python-version }}
-    
-    # Step 3: Install required dependencies
-    - name: Install dependencies
-      shell: bash
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests
-    
-    # Step 4: Validate API URL
-    - name: Validate API endpoint
-      shell: bash
-      env:
-        CRONOS_API_URL: ${{ inputs.api_url }}
-      run: |
-        echo "🔍 Validating CRONOS API endpoint..."
-        
-        # Remove trailing slash
-        API_URL="${CRONOS_API_URL%/}"
-        
-        # Test connectivity
-        if curl -s -f -m 10 "${API_URL}/" > /dev/null 2>&1; then
-          echo "✅ API endpoint is reachable"
-        else
-          echo "❌ ERROR: Cannot reach API endpoint: ${API_URL}"
-          echo "Please verify:"
-          echo "  1. The API URL is correct"
-          echo "  2. The Render service is running"
-          echo "  3. The endpoint is publicly accessible"
-          exit 1
-        fi
-    
-    # Step 5: Run CRONOS analysis
-    - name: Run CRONOS Analysis
-      id: cronos-analysis
-      shell: bash
-      env:
-        CRONOS_API_URL: ${{ inputs.api_url }}
-        ANALYSIS_MODE: ${{ inputs.mode }}
-        GITHUB_TOKEN: ${{ github.token }}
-        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
-      run: |
-        echo "🛡️ Initializing CRONOS Code Guard..."
-        chmod +x "${{ github.action_path }}/entrypoint.sh"
-        "${{ github.action_path }}/entrypoint.sh"
-        
-        # Export outputs
-        if [ -f "cronos-reports/summary.json" ]; then
-          STATUS=$(jq -r '.status // "UNKNOWN"' cronos-reports/summary.json)
-          RISK=$(jq -r '.risk // 0' cronos-reports/summary.json)
-          echo "status=${STATUS}" >> $GITHUB_OUTPUT
-          echo "risk=${RISK}" >> $GITHUB_OUTPUT
-        fi
-    
-    # Step 6: Upload reports as artifacts
-    - name: Upload CRONOS Reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: cronos-analysis-reports-${{ github.run_number }}
-        path: cronos-reports/
-        retention-days: 30
-        if-no-files-found: warn
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - ${{ inputs.api_url }}
