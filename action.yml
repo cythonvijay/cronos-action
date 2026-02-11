@@ -1,0 +1,28 @@
+name: "CRONOS Code Guard"
+description: "AI-powered change risk analysis for Python PRs and commits"
+author: "cythonvijay"
+
+inputs:
+  api_url:
+    description: "CRONOS API endpoint"
+    required: true
+  mode:
+    description: "Analysis mode: STRICT | BOUNDARY | CONTRACT"
+    default: "STRICT"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Run CRONOS Analysis
+      shell: bash
+      env:
+        CRONOS_API_URL: ${{ inputs.api_url }}
+        ANALYSIS_MODE: ${{ inputs.mode }}
+      run: |
+        chmod +x ${{ github.action_path }}/entrypoint.sh
+        ${{ github.action_path }}/entrypoint.sh
