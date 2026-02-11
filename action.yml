@@ -1,10 +1,9 @@
 name: "CRONOS Code Guard"
-description: "Static change-risk analysis using CRONOS API"
+description: "Reliable CI risk analysis for Python"
 
 inputs:
   api_url:
     required: true
-    description: "Base URL of CRONOS API (no trailing slash)"
 
 runs:
   using: "docker"
