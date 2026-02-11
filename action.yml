@@ -1,5 +1,6 @@
 name: "CRONOS Code Guard"
 description: "Static change-risk analysis using CRONOS API"
+
 inputs:
   api_url:
     required: true
