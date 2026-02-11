@@ -2,27 +2,44 @@ name: "CRONOS Code Guard"
 description: "AI-powered change risk analysis for Python PRs and commits"
 author: "cythonvijay"
 
+branding:
+  icon: "shield"
+  color: "purple"
+
 inputs:
   api_url:
-    description: "CRONOS API endpoint"
+    description: "CRONOS API endpoint (Render URL)"
     required: true
+
   mode:
     description: "Analysis mode: STRICT | BOUNDARY | CONTRACT"
+    required: false
     default: "STRICT"
 
 runs:
   using: "composite"
   steps:
+
+    # 1) Always fetch full history — REQUIRED for git diff
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
+    # 2) Ensure Python exists (your script uses python)
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    # 3) Run your real logic
     - name: Run CRONOS Analysis
       shell: bash
       env:
         CRONOS_API_URL: ${{ inputs.api_url }}
         ANALYSIS_MODE: ${{ inputs.mode }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: |
+        echo "🚀 Starting CRONOS Code Guard in $ANALYSIS_MODE mode"
         chmod +x ${{ github.action_path }}/entrypoint.sh
         ${{ github.action_path }}/entrypoint.sh
