@@ -8,7 +8,6 @@ mkdir -p "$REPORT_DIR"
 echo "🚀 CRONOS Analysis Starting..."
 echo "API: $API_URL"
 
-# Get changed files in this PR/commit
 FILES=$(git diff --name-only HEAD~1 HEAD || true)
 
 if [ -z "$FILES" ]; then
@@ -41,16 +40,19 @@ for file in $FILES; do
 
   echo "📡 Sending to CRONOS..."
 
+  # Save raw response + status
   HTTP_STATUS=$(curl -s -w "%{http_code}" \
-    -o /tmp/response.txt \
+    -o /tmp/raw_response.txt \
     -X POST "$API_URL/analyze_ci" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
 
   echo "HTTP Status: $HTTP_STATUS"
 
-  # 🚨 Critical safety check — prevents crashes
-  if [ ! -s /tmp/response.txt ]; then
+  # ---- HARD SAFETY CHECKS ----
+
+  # Case 1: No response at all
+  if [ ! -s /tmp/raw_response.txt ]; then
     echo "❌ EMPTY RESPONSE FROM API"
     OVERALL_STATUS="FAIL"
     FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -59,10 +61,22 @@ for file in $FILES; do
     continue
   fi
 
-  cat /tmp/response.txt | jq '.' > "$REPORT_DIR/${file//\//_}.json"
+  # Case 2: Response is NOT valid JSON (HTML, 502 page, etc.)
+  if ! jq -e . /tmp/raw_response.txt >/dev/null 2>&1; then
+    echo "❌ INVALID JSON RESPONSE"
+    cat /tmp/raw_response.txt
+    OVERALL_STATUS="FAIL"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    echo '{"status":"FAIL","risk":100,"error":"INVALID_JSON_RESPONSE"}' \
+      > "$REPORT_DIR/${file//\//_}.json"
+    continue
+  fi
 
-  RISK=$(jq -r '.risk' /tmp/response.txt)
-  STATUS=$(jq -r '.status' /tmp/response.txt)
+  # Pretty save valid JSON
+  cat /tmp/raw_response.txt | jq '.' > "$REPORT_DIR/${file//\//_}.json"
+
+  RISK=$(jq -r '.risk' /tmp/raw_response.txt)
+  STATUS=$(jq -r '.status' /tmp/raw_response.txt)
 
   echo "➡️ Result: status=$STATUS, risk=$RISK"
 
