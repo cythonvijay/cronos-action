@@ -1,5 +1,5 @@
 name: "CRONOS Code Guard"
-description: "AI-powered change risk analysis for Python PRs and commits"
+description: "AI-powered static analysis for Python code changes with AST-based risk detection"
 author: "cythonvijay"
 
 branding:
@@ -8,31 +8,53 @@ branding:
 
 inputs:
   api_url:
-    description: "CRONOS API endpoint (Render URL)"
+    description: "CRONOS API endpoint URL (your Render deployment URL)"
     required: true
-
+    default: "https://your-app.onrender.com"
+  
   mode:
-    description: "Analysis mode: STRICT | BOUNDARY | CONTRACT"
+    description: "Analysis mode: STRICT (blocks any semantic change), BOUNDARY (allows >, >= changes), CONTRACT (allows minor changes)"
     required: false
     default: "STRICT"
+  
+  python-version:
+    description: "Python version to use for analysis"
+    required: false
+    default: "3.11"
+
+outputs:
+  status:
+    description: "Final analysis status: PASS, WARN, or FAIL"
+    value: ${{ env.CRONOS_FINAL_STATUS }}
+  
+  reports-path:
+    description: "Path to generated analysis reports"
+    value: "cronos-reports"
 
 runs:
   using: "composite"
   steps:
-
-    # 1) Always fetch full history — REQUIRED for git diff
-    - name: Checkout code
+    # Step 1: Checkout with full history (CRITICAL for git diff)
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
-
-    # 2) Ensure Python exists (your script uses python)
-    - name: Set up Python
-      uses: actions/setup-python@v4
+        fetch-depth: 0  # Full history needed for git diff HEAD~1
+        token: ${{ github.token }}
+    
+    # Step 2: Setup Python
+    - name: Setup Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
-
-    # 3) Run your real logic
+        python-version: ${{ inputs.python-version }}
+    
+    # Step 3: Install dependencies (if needed)
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        # Add any required packages here if needed
+    
+    # Step 4: Run CRONOS analysis
     - name: Run CRONOS Analysis
       shell: bash
       env:
@@ -40,6 +62,15 @@ runs:
         ANALYSIS_MODE: ${{ inputs.mode }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
-        echo "🚀 Starting CRONOS Code Guard in $ANALYSIS_MODE mode"
+        echo "🛡️ Initializing CRONOS Code Guard..."
         chmod +x ${{ github.action_path }}/entrypoint.sh
         ${{ github.action_path }}/entrypoint.sh
+    
+    # Step 5: Upload reports as artifacts (optional but recommended)
+    - name: Upload CRONOS Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: cronos-analysis-reports
+        path: cronos-reports/
+        retention-days: 30
