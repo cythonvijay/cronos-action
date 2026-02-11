@@ -6,7 +6,6 @@ echo "🌐 API: $CRONOS_API_URL"
 
 mkdir -p cronos-reports
 
-# Detect changed python files
 git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep '\.py$' > changed_files.txt || true
 
 if [ ! -s changed_files.txt ]; then
@@ -22,7 +21,6 @@ while IFS= read -r file; do
   git show HEAD~1:"$file" > /tmp/old_code.py 2>/dev/null || echo "" > /tmp/old_code.py
   cp "$file" /tmp/new_code.py
 
-  # Build JSON safely
   python3 <<EOF > /tmp/payload.json
 import json
 payload = {
@@ -37,15 +35,13 @@ EOF
     -H "Content-Type: application/json" \
     --data-binary @/tmp/payload.json)
 
-  echo "Raw API response:"
+  echo "Raw response from Render:"
   echo "$RESPONSE"
 
-  # Save response for debugging
   echo "$RESPONSE" > "cronos-reports/${file//\//_}.json"
 
-  # If response is empty → treat as FAIL
   if [ -z "$RESPONSE" ]; then
-    echo "⚠️ WARNING: Empty response from CRONOS API"
+    echo "⚠️ Empty response from API"
     OVERALL_STATUS="FAIL"
     continue
   fi
@@ -53,9 +49,8 @@ EOF
   STATUS=$(echo "$RESPONSE" | python3 - <<EOF
 import json, sys
 try:
-    data = json.loads(sys.stdin.read())
-    print(data.get("status","UNKNOWN"))
-except Exception as e:
+    print(json.loads(sys.stdin.read()).get("status","UNKNOWN"))
+except Exception:
     print("INVALID_JSON")
 EOF
 )
