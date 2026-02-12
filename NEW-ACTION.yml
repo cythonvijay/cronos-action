@@ -32,7 +32,7 @@ runs:
         API_URL: ${{ inputs.api_url }}
         MODE: ${{ inputs.mode }}
       run: |
-        set -euo pipefail
+        set +e   # <-- IMPORTANT: prevents pipeline crash
 
         API_URL="${API_URL%/}"
         REPORT_DIR="cronos-reports"
@@ -44,7 +44,6 @@ runs:
         echo "Mode: $MODE"
         echo "==============================="
 
-        # ---- Check API ----
         echo "🔌 Checking API..."
         if ! curl -sf --max-time 10 "$API_URL/" > /dev/null 2>&1; then
           echo "❌ Cannot reach API at $API_URL"
@@ -52,7 +51,6 @@ runs:
         fi
         echo "✅ API reachable"
 
-        # ---- Detect changed Python files ----
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
         else
@@ -64,9 +62,6 @@ runs:
           exit 0
         fi
 
-        echo "Files to analyze:"
-        echo "$FILES"
-
         FAIL_COUNT=0
         TOTAL=0
 
@@ -77,9 +72,7 @@ runs:
           echo "📄 Analyzing: $file"
 
           OLD_CODE=""
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            git show HEAD~1:"$file" 2>/dev/null || true
-          fi
+          git show HEAD~1:"$file" 2>/dev/null || true
 
           NEW_CODE=$(cat "$file")
 
@@ -89,7 +82,7 @@ runs:
             --arg mode "$MODE" \
             '{old_code:$old, new_code:$new, mode:$mode}')
 
-          RESP_FILE="/tmp/cronos_resp_${TOTAL}.json"
+          RESP_FILE="$REPORT_DIR/${file//\//_}.json"
 
           HTTP_CODE=$(curl -s -w "%{http_code}" \
             -o "$RESP_FILE" \
@@ -97,8 +90,16 @@ runs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
+          echo "HTTP: $HTTP_CODE"
+
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ API error $HTTP_CODE"
+            echo '{"status":"FAIL","risk":100,"error":"HTTP_ERROR"}' > "$RESP_FILE"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            continue
+          fi
+
+          if [ ! -s "$RESP_FILE" ] || ! jq empty "$RESP_FILE" 2>/dev/null; then
+            echo '{"status":"FAIL","risk":100,"error":"INVALID_JSON"}' > "$RESP_FILE"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             continue
           fi
@@ -107,15 +108,12 @@ runs:
           RISK=$(jq -r '.risk' "$RESP_FILE")
           SUMMARY=$(jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null || echo "No issues detected")
 
-          cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
-
           echo "::notice::CRONOS → $file | Status=$STATUS | Risk=$RISK"
 
           {
             echo "### File: \`$file\`"
             echo "**Status:** $STATUS"
             echo "**Risk:** $RISK / 100"
-            echo ""
             echo "**Findings:**"
             echo "$SUMMARY" | sed 's/^/- /'
             echo ""
