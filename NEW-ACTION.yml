@@ -230,10 +230,21 @@ runs:
         echo ""
         
         # Exit with status
-        if [ $FAIL_COUNT -gt 0 ]; then
-            echo "🚫 BUILD BLOCKED - $FAIL_COUNT file(s) failed"
-            exit 1
-        else
-            echo "✅ BUILD APPROVED"
-            exit 0
-        fi
+
+      echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "📊 FINAL CRONOS RESULT"
+echo "════════════════════════════════════════════════════════════════"
+echo "Total: $TOTAL"
+echo "Passed: $PASS_COUNT"
+echo "Warnings: $WARN_COUNT"
+echo "Failed: $FAIL_COUNT"
+echo "════════════════════════════════════════════════════════════════"
+
+if [ $FAIL_COUNT -gt 0 ]; then
+    echo "🚫 BUILD BLOCKED — but results above are valid."
+    exit 1
+else
+    echo "✅ BUILD APPROVED"
+    exit 0
+fi
