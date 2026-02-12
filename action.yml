@@ -1,12 +1,16 @@
-name: "CRONOS Code Guard"
-description: "Reliable CI risk analysis for Python"
+name: 'CRONOS Code Guard'
+description: 'Reliable CI risk analysis for Python code changes'
+author: 'cythonvijay'
 
 inputs:
   api_url:
+    description: 'CRONOS API endpoint URL'
     required: true
+  mode:
+    description: 'Analysis mode: STRICT, BOUNDARY, or CONTRACT'
+    required: false
+    default: 'STRICT'
 
 runs:
-  using: "docker"
-  image: "Dockerfile"
-  args:
-    - ${{ inputs.api_url }}
+  using: 'docker'
+  image: 'Dockerfile'
