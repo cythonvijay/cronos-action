@@ -138,17 +138,19 @@ runs:
           cat "$RES_F" || echo "{}"
           echo "--------------------------------------------------"
 
-          printf '### %s\n' "$file" >> "$GITHUB_STEP_SUMMARY"
-          printf '- Status: %s\n' "$ST" >> "$GITHUB_STEP_SUMMARY"
-          printf '- Risk: %s/100\n' "$RK" >> "$GITHUB_STEP_SUMMARY"
-          printf '- Findings: %s\n' "$FN" >> "$GITHUB_STEP_SUMMARY"
-          printf '- Old Hash: %s\n' "$OLD_HASH" >> "$GITHUB_STEP_SUMMARY"
-          printf '- New Hash: %s\n' "$NEW_HASH" >> "$GITHUB_STEP_SUMMARY"
-          printf '- AST Changed: %s\n\n' "$AST_CHANGED" >> "$GITHUB_STEP_SUMMARY"
-
-          printf '#### Human Summary\n' >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.summary[]//empty' "$RES_F" 2>/dev/null | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
-          printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '### %s\n' "$file"
+            printf '- Status: %s\n' "$ST"
+            printf '- Risk: %s/100\n' "$RK"
+            printf '- Findings: %s\n' "$FN"
+            [ -n "$OLD_HASH" ] && printf '- Old Hash: %s\n' "$OLD_HASH"
+            [ -n "$NEW_HASH" ] && printf '- New Hash: %s\n' "$NEW_HASH"
+            [ -n "$AST_CHANGED" ] && printf '- AST Changed: %s\n' "$AST_CHANGED"
+            printf '\n'
+            printf '#### Human Summary\n'
+            jq -r '.summary[]//empty' "$RES_F" 2>/dev/null | sed 's/^/- /' || true
+            printf '\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
           rm -f "$RES_F"
 
