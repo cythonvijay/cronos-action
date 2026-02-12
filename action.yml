@@ -120,9 +120,9 @@ runs:
           RK=$(jq -r '.risk//100' "$RES_F")
           FN=$(jq -r '.findings_count//0' "$RES_F")
 
-          OLD_HASH=$(jq -r '.old_hash//"N/A"' "$RES_F")
-          NEW_HASH=$(jq -r '.new_hash//"N/A"' "$RES_F")
-          AST_CHANGED=$(jq -r '.ast_changed//"N/A"' "$RES_F")
+          OLD_HASH=$(jq -r '.old_hash//empty' "$RES_F" 2>/dev/null || echo "N/A")
+          NEW_HASH=$(jq -r '.new_hash//empty' "$RES_F" 2>/dev/null || echo "N/A")
+          AST_CHANGED=$(jq -r '.ast_changed//empty' "$RES_F" 2>/dev/null || echo "N/A")
 
           cp "$RES_F" "$REPORT"
 
@@ -135,7 +135,7 @@ runs:
           echo "New Hash: $NEW_HASH"
           echo "AST Changed: $AST_CHANGED"
           echo "---- Full Technical JSON ----"
-          cat "$RES_F"
+          cat "$RES_F" || echo "{}"
           echo "--------------------------------------------------"
 
           printf '### %s\n' "$file" >> "$GITHUB_STEP_SUMMARY"
@@ -147,7 +147,7 @@ runs:
           printf '- AST Changed: %s\n\n' "$AST_CHANGED" >> "$GITHUB_STEP_SUMMARY"
 
           printf '#### Human Summary\n' >> "$GITHUB_STEP_SUMMARY"
-          jq -r '.summary[]?' "$RES_F" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.summary[]//empty' "$RES_F" 2>/dev/null | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
           printf '\n' >> "$GITHUB_STEP_SUMMARY"
 
           rm -f "$RES_F"
