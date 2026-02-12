@@ -143,7 +143,13 @@ runs:
                 -H "Content-Type: application/json" \
                 -H "Accept: application/json" \
                 --max-time 60 \
-                -d "$PAYLOAD" 2>/dev/null)
+                -d "$PAYLOAD")
+            
+            echo "---- RAW RESPONSE LENGTH ----"
+            wc -c "$RESP_FILE"
+            
+            echo "---- RAW RESPONSE CONTENT ----"
+            cat "$RESP_FILE"
             
             echo "HTTP: $HTTP_CODE"
             
