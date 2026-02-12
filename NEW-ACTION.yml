@@ -147,7 +147,7 @@ runs:
             
             echo "HTTP: $HTTP_CODE"
             
-            # Validate response
+            # Validate HTTP status
             if [ "$HTTP_CODE" != "200" ]; then
                 echo "❌ API returned HTTP $HTTP_CODE"
                 if [ -f "$RESP_FILE" ]; then
@@ -160,20 +160,12 @@ runs:
                 continue
             fi
             
-            if [ ! -s "$RESP_FILE" ]; then
-                echo "❌ Empty response"
+            # FIX 2: Harden against empty or invalid JSON responses
+            if [ ! -s "$RESP_FILE" ] || ! jq empty "$RESP_FILE" 2>/dev/null; then
+                echo "❌ Invalid or empty JSON response"
+                cat "$RESP_FILE" || true
                 FAIL_COUNT=$((FAIL_COUNT + 1))
-                echo '{"status":"FAIL","risk":100,"error":"EMPTY_RESPONSE"}' > "$REPORT_DIR/${file//\//_}.json"
-                echo ""
-                continue
-            fi
-            
-            if ! jq empty "$RESP_FILE" 2>/dev/null; then
-                echo "❌ Invalid JSON"
-                echo "Response:"
-                head -10 "$RESP_FILE"
-                FAIL_COUNT=$((FAIL_COUNT + 1))
-                echo '{"status":"FAIL","risk":100,"error":"INVALID_JSON"}' > "$REPORT_DIR/${file//\//_}.json"
+                echo '{"status":"FAIL","risk":100,"error":"INVALID_OR_EMPTY_JSON"}' > "$REPORT_DIR/${file//\//_}.json"
                 echo ""
                 continue
             fi
