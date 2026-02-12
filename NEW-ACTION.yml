@@ -17,6 +17,7 @@ inputs:
 runs:
   using: 'composite'
   steps:
+
     - name: Install dependencies
       shell: bash
       run: |
@@ -24,7 +25,7 @@ runs:
           sudo apt-get update -qq
           sudo apt-get install -y jq curl
         fi
-    
+
     - name: Run CRONOS Analysis
       shell: bash
       env:
@@ -32,219 +33,109 @@ runs:
         MODE: ${{ inputs.mode }}
       run: |
         set -euo pipefail
-        
-        # Remove trailing slash from API URL
+
         API_URL="${API_URL%/}"
         REPORT_DIR="cronos-reports"
-        
-        echo "════════════════════════════════════════════════════════════════"
-        echo "🚀 CRONOS Code Analysis"
-        echo "════════════════════════════════════════════════════════════════"
-        echo "📡 API: $API_URL"
-        echo "🎯 Mode: $MODE"
-        echo "📂 Working Dir: $(pwd)"
-        echo "════════════════════════════════════════════════════════════════"
-        echo ""
-        
-        # Create report directory
         mkdir -p "$REPORT_DIR"
-        
-        # Test API connectivity
-        echo "🔌 Testing API connectivity..."
+
+        echo "==============================="
+        echo "🚀 Running CRONOS Analysis"
+        echo "API: $API_URL"
+        echo "Mode: $MODE"
+        echo "==============================="
+
+        # ---- Check API ----
+        echo "🔌 Checking API..."
         if ! curl -sf --max-time 10 "$API_URL/" > /dev/null 2>&1; then
-            echo "❌ ERROR: Cannot reach API at $API_URL"
-            echo ""
-            echo "Please check:"
-            echo "  • API is running (check Render dashboard)"
-            echo "  • CRONOS_API_URL secret is correct"
-            echo "  • No network firewall blocking access"
-            exit 1
+          echo "❌ Cannot reach API at $API_URL"
+          exit 1
         fi
-        echo "✅ API is reachable"
-        echo ""
-        
-        # Detect changed Python files
-        echo "📋 Detecting changed Python files..."
-        FILES=""
-        
+        echo "✅ API reachable"
+
+        # ---- Detect changed Python files ----
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep '\.py$' || true)
-            echo "Comparing with previous commit (HEAD~1)"
+          FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
         else
-            FILES=$(git ls-files '*.py' 2>/dev/null || true)
-            echo "First commit - analyzing all Python files"
+          FILES=$(git ls-files '*.py' || true)
         fi
-        
+
         if [ -z "$FILES" ]; then
-            echo "✅ No Python files changed - skipping analysis"
-            exit 0
+          echo "✅ No Python files changed — skipping."
+          exit 0
         fi
-        
+
         echo "Files to analyze:"
-        echo "$FILES" | sed 's/^/  • /'
-        echo ""
-        
-        # Initialize counters
+        echo "$FILES"
+
         FAIL_COUNT=0
-        WARN_COUNT=0
-        PASS_COUNT=0
         TOTAL=0
-        
-        # Analyze each file
+
+        echo "## 🔍 CRONOS Analysis Report" >> "$GITHUB_STEP_SUMMARY"
+
         for file in $FILES; do
-            TOTAL=$((TOTAL + 1))
-            
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📄 File $TOTAL: $file"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            
-            # Check file exists
-            if [ ! -f "$file" ]; then
-                echo "⚠️  File deleted - skipping"
-                echo ""
-                continue
-            fi
-            
-            # Get old code
-            OLD_CODE=""
-            if git rev-parse HEAD~1 >/dev/null 2>&1; then
-                if git cat-file -e HEAD~1:"$file" 2>/dev/null; then
-                    OLD_CODE=$(git show HEAD~1:"$file" 2>/dev/null || echo "")
-                    echo "Old: $(echo "$OLD_CODE" | wc -l) lines"
-                else
-                    echo "Old: New file"
-                fi
-            else
-                echo "Old: First commit"
-            fi
-            
-            # Get new code
-            NEW_CODE=$(cat "$file")
-            echo "New: $(echo "$NEW_CODE" | wc -l) lines"
-            
-            # Build JSON payload
-            PAYLOAD=$(jq -n \
-                --arg old "$OLD_CODE" \
-                --arg new "$NEW_CODE" \
-                --arg mode "$MODE" \
-                '{
-                    old_code: $old,
-                    new_code: $new,
-                    mode: $mode
-                }')
-            
-            # Call API
-            RESP_FILE="/tmp/cronos_resp_${TOTAL}.json"
-            echo "📡 Calling API..."
-            
-            HTTP_CODE=$(curl -s -w "%{http_code}" \
-                -o "$RESP_FILE" \
-                -X POST "$API_URL/analyze_ci" \
-                -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
-                --max-time 60 \
-                -d "$PAYLOAD")
-            
-            echo "---- RAW RESPONSE LENGTH ----"
-            wc -c "$RESP_FILE"
-            
-            echo "---- RAW RESPONSE CONTENT ----"
-            cat "$RESP_FILE"
-            
-            echo "HTTP: $HTTP_CODE"
-            
-            # Validate HTTP status
-            if [ "$HTTP_CODE" != "200" ]; then
-                echo "❌ API returned HTTP $HTTP_CODE"
-                if [ -f "$RESP_FILE" ]; then
-                    echo "Response:"
-                    head -10 "$RESP_FILE"
-                fi
-                FAIL_COUNT=$((FAIL_COUNT + 1))
-                echo '{"status":"FAIL","risk":100,"error":"HTTP_ERROR"}' > "$REPORT_DIR/${file//\//_}.json"
-                echo ""
-                continue
-            fi
-            
-            # FIX 2: Harden against empty or invalid JSON responses
-            if [ ! -s "$RESP_FILE" ] || ! jq empty "$RESP_FILE" 2>/dev/null; then
-                echo "❌ Invalid or empty JSON response"
-                cat "$RESP_FILE" || true
-                FAIL_COUNT=$((FAIL_COUNT + 1))
-                echo '{"status":"FAIL","risk":100,"error":"INVALID_OR_EMPTY_JSON"}' > "$REPORT_DIR/${file//\//_}.json"
-                echo ""
-                continue
-            fi
-            
-            # Parse results
-            STATUS=$(jq -r '.status // "FAIL"' "$RESP_FILE")
-            RISK=$(jq -r '.risk // 100' "$RESP_FILE")
-            FINDINGS=$(jq -r '.findings_count // 0' "$RESP_FILE")
-            
-            # Save report
-            cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
-            
-            # Display results
+          TOTAL=$((TOTAL + 1))
+          echo "📄 Analyzing: $file"
+
+          OLD_CODE=""
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            git show HEAD~1:"$file" 2>/dev/null || true
+          fi
+
+          NEW_CODE=$(cat "$file")
+
+          PAYLOAD=$(jq -n \
+            --arg old "$OLD_CODE" \
+            --arg new "$NEW_CODE" \
+            --arg mode "$MODE" \
+            '{old_code:$old, new_code:$new, mode:$mode}')
+
+          RESP_FILE="/tmp/cronos_resp_${TOTAL}.json"
+
+          HTTP_CODE=$(curl -s -w "%{http_code}" \
+            -o "$RESP_FILE" \
+            -X POST "$API_URL/analyze_ci" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ API error $HTTP_CODE"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            continue
+          fi
+
+          STATUS=$(jq -r '.status' "$RESP_FILE")
+          RISK=$(jq -r '.risk' "$RESP_FILE")
+          SUMMARY=$(jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null || echo "No issues detected")
+
+          cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
+
+          echo "::notice::CRONOS → $file | Status=$STATUS | Risk=$RISK"
+
+          {
+            echo "### File: \`$file\`"
+            echo "**Status:** $STATUS"
+            echo "**Risk:** $RISK / 100"
             echo ""
-            echo "Results:"
-            echo "  Status: $STATUS"
-            echo "  Risk: $RISK/100"
-            echo "  Findings: $FINDINGS"
-            
-            if [ "$FINDINGS" -gt 0 ]; then
-                echo "  Summary:"
-                jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null | head -3 | sed 's/^/    • /'
-            fi
-            
-            # Update counters
-            case "$STATUS" in
-                PASS)
-                    PASS_COUNT=$((PASS_COUNT + 1))
-                    echo "  ✅ PASS"
-                    ;;
-                WARN)
-                    WARN_COUNT=$((WARN_COUNT + 1))
-                    echo "  ⚠️  WARN"
-                    ;;
-                FAIL)
-                    FAIL_COUNT=$((FAIL_COUNT + 1))
-                    echo "  ❌ FAIL"
-                    ;;
-                *)
-                    FAIL_COUNT=$((FAIL_COUNT + 1))
-                    echo "  ❌ UNKNOWN"
-                    ;;
-            esac
+            echo "**Findings:**"
+            echo "$SUMMARY" | sed 's/^/- /'
             echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$STATUS" = "FAIL" ]; then
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+          fi
         done
-        
-        # Final summary
-        echo "════════════════════════════════════════════════════════════════"
-        echo "📊 Analysis Complete"
-        echo "════════════════════════════════════════════════════════════════"
-        echo "Total: $TOTAL"
-        echo "✅ Passed: $PASS_COUNT"
-        echo "⚠️  Warnings: $WARN_COUNT"
-        echo "❌ Failed: $FAIL_COUNT"
-        echo "════════════════════════════════════════════════════════════════"
-        echo ""
-        
-        # Exit with status
 
-      echo ""
-echo "════════════════════════════════════════════════════════════════"
-echo "📊 FINAL CRONOS RESULT"
-echo "════════════════════════════════════════════════════════════════"
-echo "Total: $TOTAL"
-echo "Passed: $PASS_COUNT"
-echo "Warnings: $WARN_COUNT"
-echo "Failed: $FAIL_COUNT"
-echo "════════════════════════════════════════════════════════════════"
+        echo "==============================="
+        echo "FINAL RESULT"
+        echo "Files checked: $TOTAL"
+        echo "Failures: $FAIL_COUNT"
+        echo "==============================="
 
-if [ $FAIL_COUNT -gt 0 ]; then
-    echo "🚫 BUILD BLOCKED — but results above are valid."
-    exit 1
-else
-    echo "✅ BUILD APPROVED"
-    exit 0
-fi
+        if [ $FAIL_COUNT -gt 0 ]; then
+          echo "🚫 Build blocked due to CRONOS risk."
+          exit 1
+        else
+          echo "✅ Build approved."
+          exit 0
+        fi
