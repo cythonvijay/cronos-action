@@ -128,15 +128,18 @@ runs:
           echo "Risk: $RK"
           echo "Findings: $FN"
           
-          # Only show hash fields if they exist in JSON
+          # Check and display optional fields in console
           if jq -e '.old_hash' "$RES_F" >/dev/null 2>&1; then
-            echo "Old Hash: $(jq -r '.old_hash' "$RES_F")"
+            OLD_H=$(jq -r '.old_hash' "$RES_F")
+            echo "Old Hash: $OLD_H"
           fi
           if jq -e '.new_hash' "$RES_F" >/dev/null 2>&1; then
-            echo "New Hash: $(jq -r '.new_hash' "$RES_F")"
+            NEW_H=$(jq -r '.new_hash' "$RES_F")
+            echo "New Hash: $NEW_H"
           fi
           if jq -e '.ast_changed' "$RES_F" >/dev/null 2>&1; then
-            echo "AST Changed: $(jq -r '.ast_changed' "$RES_F")"
+            AST_CH=$(jq -r '.ast_changed' "$RES_F")
+            echo "AST Changed: $AST_CH"
           fi
           
           echo "---- Full Technical JSON ----"
@@ -144,27 +147,28 @@ runs:
           echo "--------------------------------------------------"
 
           # Build GitHub Step Summary
-          {
-            printf '### %s\n' "$file"
-            printf '- Status: %s\n' "$ST"
-            printf '- Risk: %s/100\n' "$RK"
-            printf '- Findings: %s\n' "$FN"
-            
-            # Only add hash fields if they exist
-            if jq -e '.old_hash' "$RES_F" >/dev/null 2>&1; then
-              printf '- Old Hash: %s\n' "$(jq -r '.old_hash' "$RES_F")"
-            fi
-            if jq -e '.new_hash' "$RES_F" >/dev/null 2>&1; then
-              printf '- New Hash: %s\n' "$(jq -r '.new_hash' "$RES_F")"
-            fi
-            if jq -e '.ast_changed' "$RES_F" >/dev/null 2>&1; then
-              printf '- AST Changed: %s\n' "$(jq -r '.ast_changed' "$RES_F")"
-            fi
-            
-            printf '\n#### Human Summary\n'
-            jq -r '.summary[]//empty' "$RES_F" 2>/dev/null | sed 's/^/- /' || true
-            printf '\n'
-          } >> "$GITHUB_STEP_SUMMARY"
+          printf '### %s\n' "$file" >> "$GITHUB_STEP_SUMMARY"
+          printf '- Status: %s\n' "$ST" >> "$GITHUB_STEP_SUMMARY"
+          printf '- Risk: %s/100\n' "$RK" >> "$GITHUB_STEP_SUMMARY"
+          printf '- Findings: %s\n' "$FN" >> "$GITHUB_STEP_SUMMARY"
+          
+          # Add optional fields if they exist
+          if jq -e '.old_hash' "$RES_F" >/dev/null 2>&1; then
+            OLD_H=$(jq -r '.old_hash' "$RES_F")
+            printf '- Old Hash: %s\n' "$OLD_H" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if jq -e '.new_hash' "$RES_F" >/dev/null 2>&1; then
+            NEW_H=$(jq -r '.new_hash' "$RES_F")
+            printf '- New Hash: %s\n' "$NEW_H" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if jq -e '.ast_changed' "$RES_F" >/dev/null 2>&1; then
+            AST_CH=$(jq -r '.ast_changed' "$RES_F")
+            printf '- AST Changed: %s\n' "$AST_CH" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          
+          printf '\n#### Human Summary\n' >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.summary[]//empty' "$RES_F" 2>/dev/null | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
+          printf '\n' >> "$GITHUB_STEP_SUMMARY"
 
           rm -f "$RES_F"
 
