@@ -147,23 +147,23 @@ runs:
           echo "--------------------------------------------------"
 
           # Build GitHub Step Summary
-          printf -- '### %s\n' "$file" >> "$GITHUB_STEP_SUMMARY"
-          printf -- '- Status: %s\n' "$ST" >> "$GITHUB_STEP_SUMMARY"
-          printf -- '- Risk: %s/100\n' "$RK" >> "$GITHUB_STEP_SUMMARY"
-          printf -- '- Findings: %s\n' "$FN" >> "$GITHUB_STEP_SUMMARY"
+          echo "### $file" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status: $ST" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Risk: $RK/100" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Findings: $FN" >> "$GITHUB_STEP_SUMMARY"
           
           # Add optional fields if they exist
           if jq -e '.old_hash' "$RES_F" >/dev/null 2>&1; then
             OLD_H=$(jq -r '.old_hash' "$RES_F")
-            printf -- '- Old Hash: %s\n' "$OLD_H" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Old Hash: $OLD_H" >> "$GITHUB_STEP_SUMMARY"
           fi
           if jq -e '.new_hash' "$RES_F" >/dev/null 2>&1; then
             NEW_H=$(jq -r '.new_hash' "$RES_F")
-            printf -- '- New Hash: %s\n' "$NEW_H" >> "$GITHUB_STEP_SUMMARY"
+            echo "- New Hash: $NEW_H" >> "$GITHUB_STEP_SUMMARY"
           fi
           if jq -e '.ast_changed' "$RES_F" >/dev/null 2>&1; then
             AST_CH=$(jq -r '.ast_changed' "$RES_F")
-            printf -- '- AST Changed: %s\n' "$AST_CH" >> "$GITHUB_STEP_SUMMARY"
+            echo "- AST Changed: $AST_CH" >> "$GITHUB_STEP_SUMMARY"
           fi
           
           echo "" >> "$GITHUB_STEP_SUMMARY"
