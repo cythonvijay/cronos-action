@@ -42,7 +42,7 @@ runs:
         echo "Mode: $MODE"
         echo "=========================================="
 
-        # ---- Detect changed python files ----
+        # Detect changed Python files
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
         else
@@ -50,13 +50,10 @@ runs:
         fi
 
         if [ -z "$FILES" ]; then
-          echo "✅ No Python files changed — nothing to analyze."
+          echo "✅ No Python files changed — skipping analysis."
           echo "## ✅ CRONOS: No changes detected" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
-
-        echo "Files to analyze:"
-        echo "$FILES"
 
         FAIL_COUNT=0
         TOTAL=0
@@ -105,8 +102,6 @@ runs:
           FINDINGS=$(jq -r '.findings_count // 0' "$RESP_FILE")
 
           cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
-
-          echo "Status: $STATUS | Risk: $RISK | Findings: $FINDINGS"
 
           {
             echo "## 🔍 CRONOS Report — $file"
