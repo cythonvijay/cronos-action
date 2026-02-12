@@ -62,6 +62,7 @@ runs:
           TOTAL=$((TOTAL + 1))
           RESP_FILE="/tmp/cronos_resp_${TOTAL}.json"
 
+          echo ""
           echo "🔍 Analyzing: $file"
 
           OLD_CODE=""
@@ -79,20 +80,39 @@ runs:
             --arg mode "$MODE" \
             '{old_code:$old, new_code:$new, mode:$mode}')
 
+          # -------- SAFE CURL EXECUTION --------
+          set +e
+
           HTTP_CODE=$(curl -s -w "%{http_code}" \
             -o "$RESP_FILE" \
             -X POST "$API_URL/analyze_ci" \
             -H "Content-Type: application/json" \
+            --max-time 60 \
             -d "$PAYLOAD")
 
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ API returned $HTTP_CODE"
+          CURL_EXIT=$?
+
+          set -e
+          # -------------------------------------
+
+          if [ "$CURL_EXIT" -ne 0 ]; then
+            echo "❌ CURL failed to reach API"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             continue
           fi
 
-          if ! jq empty "$RESP_FILE" 2>/dev/null; then
-            echo "❌ Invalid JSON from API"
+          echo "HTTP: $HTTP_CODE"
+          echo "Response preview:"
+          head -5 "$RESP_FILE" || true
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ API returned HTTP $HTTP_CODE"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            continue
+          fi
+
+          if [ ! -s "$RESP_FILE" ] || ! jq empty "$RESP_FILE" 2>/dev/null; then
+            echo "❌ Invalid or empty JSON response"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             continue
           fi
@@ -119,6 +139,7 @@ runs:
           fi
         done
 
+        echo ""
         echo "=========================================="
         echo "TOTAL FILES: $TOTAL"
         echo "FAILED: $FAIL_COUNT"
