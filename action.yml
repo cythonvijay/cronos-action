@@ -1,19 +1,105 @@
 name: 'CRONOS Code Guard'
-description: 'Reliable CI risk analysis for Python code changes'
+description: 'CI risk analysis for Python'
 author: 'cythonvijay'
 
 inputs:
   api_url:
-    description: 'CRONOS API endpoint URL'
+    description: 'API URL'
     required: true
-  mode:
-    description: 'Analysis mode: STRICT, BOUNDARY, or CONTRACT'
-    required: false
-    default: 'STRICT'
 
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
-  env:
-    INPUT_API_URL: ${{ inputs.api_url }}
-    INPUT_MODE: ${{ inputs.mode }}
+  using: 'composite'
+  steps:
+    - name: Run analysis
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -euo pipefail
+        
+        API_URL="${{ inputs.api_url }}"
+        API_URL="${API_URL%/}"
+        MODE="STRICT"
+        REPORT_DIR="cronos-reports"
+        
+        echo "🚀 CRONOS Analysis"
+        echo "API: $API_URL"
+        
+        mkdir -p "$REPORT_DIR"
+        
+        # Test API
+        if ! curl -sf --max-time 10 "$API_URL/" > /dev/null; then
+            echo "❌ Cannot reach API"
+            exit 1
+        fi
+        echo "✅ API reachable"
+        
+        # Get changed files
+        FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep '\.py$' || git ls-files '*.py' || true)
+        
+        if [ -z "$FILES" ]; then
+            echo "✅ No Python files changed"
+            exit 0
+        fi
+        
+        echo "Files to analyze:"
+        echo "$FILES"
+        
+        FAIL_COUNT=0
+        
+        for file in $FILES; do
+            [ ! -f "$file" ] && continue
+            
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "📄 $file"
+            
+            OLD_CODE=$(git show HEAD~1:"$file" 2>/dev/null || echo "")
+            NEW_CODE=$(cat "$file")
+            
+            PAYLOAD=$(jq -n \
+                --arg old "$OLD_CODE" \
+                --arg new "$NEW_CODE" \
+                --arg mode "$MODE" \
+                '{"old_code":$old,"new_code":$new,"mode":$mode}')
+            
+            RESP_FILE="/tmp/resp_$$.json"
+            HTTP_CODE=$(curl -s -w "%{http_code}" \
+                -o "$RESP_FILE" \
+                -X POST "$API_URL/analyze_ci" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+            
+            echo "HTTP: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" != "200" ]; then
+                echo "❌ API Error"
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+                continue
+            fi
+            
+            if [ ! -s "$RESP_FILE" ] || ! jq empty "$RESP_FILE" 2>/dev/null; then
+                echo "❌ Invalid response"
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+                continue
+            fi
+            
+            STATUS=$(jq -r '.status // "FAIL"' "$RESP_FILE")
+            RISK=$(jq -r '.risk // 100' "$RESP_FILE")
+            
+            cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
+            
+            echo "Status: $STATUS (Risk: $RISK)"
+            
+            if [ "$STATUS" == "FAIL" ]; then
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+            fi
+        done
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        if [ $FAIL_COUNT -gt 0 ]; then
+            echo "🚫 BUILD BLOCKED ($FAIL_COUNT failed)"
+            exit 1
+        else
+            echo "✅ BUILD APPROVED"
+            exit 0
+        fi
