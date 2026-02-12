@@ -37,25 +37,21 @@ runs:
         REPORT_DIR="cronos-reports"
         mkdir -p "$REPORT_DIR"
 
-        echo "════════════════════════════════════════"
-        echo "🚀 CRONOS Code Analysis"
-        echo "════════════════════════════════════════"
+        echo "========================================"
+        echo "CRONOS Code Analysis"
+        echo "========================================"
         echo "API: $API_URL"
         echo "Mode: $MODE"
-        echo "════════════════════════════════════════"
-        echo ""
+        echo "========================================"
 
-        # Test API connectivity
-        echo "Testing API..."
+        echo "Testing API connectivity..."
         if ! curl -sf --max-time 10 "$API_URL/" > /dev/null 2>&1; then
-          echo "❌ Cannot reach API at $API_URL"
-          echo "## ❌ CRONOS: API Unreachable" >> "$GITHUB_STEP_SUMMARY"
+          echo "ERROR: Cannot reach API at $API_URL"
+          echo "## CRONOS: API Unreachable" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
-        echo "✅ API reachable"
-        echo ""
+        echo "API reachable OK"
 
-        # Detect changed Python files
         FILES=""
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
@@ -64,14 +60,13 @@ runs:
         fi
 
         if [ -z "$FILES" ]; then
-          echo "✅ No Python files changed"
-          echo "## ✅ CRONOS: No changes detected" >> "$GITHUB_STEP_SUMMARY"
+          echo "No Python files changed"
+          echo "## CRONOS: No changes detected" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
 
         echo "Files to analyze:"
         echo "$FILES"
-        echo ""
 
         FAIL_COUNT=0
         WARN_COUNT=0
@@ -82,45 +77,37 @@ runs:
           [ ! -f "$file" ] && continue
 
           TOTAL=$((TOTAL + 1))
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📄 File $TOTAL: $file"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "----------------------------------------"
+          echo "File $TOTAL: $file"
+          echo "----------------------------------------"
 
-          # Write old code to temp file
-          OLD_FILE=$(mktemp /tmp/cronos_old_XXXXXX.py)
-          NEW_FILE=$(mktemp /tmp/cronos_new_XXXXXX.py)
-          PAYLOAD_FILE=$(mktemp /tmp/cronos_payload_XXXXXX.json)
-          RESP_FILE=$(mktemp /tmp/cronos_resp_XXXXXX.json)
+          OLD_FILE=$(mktemp /tmp/cronos_old_XXXXXX)
+          NEW_FILE=$(mktemp /tmp/cronos_new_XXXXXX)
+          PAYLOAD_FILE=$(mktemp /tmp/cronos_payload_XXXXXX)
+          RESP_FILE=$(mktemp /tmp/cronos_resp_XXXXXX)
 
-          # Get old code (empty string if first commit)
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            git show HEAD~1:"$file" > "$OLD_FILE" 2>/dev/null || echo -n "" > "$OLD_FILE"
+            git show HEAD~1:"$file" > "$OLD_FILE" 2>/dev/null || printf "" > "$OLD_FILE"
           else
-            echo -n "" > "$OLD_FILE"
+            printf "" > "$OLD_FILE"
           fi
 
-          # Get new code
           cat "$file" > "$NEW_FILE"
 
-          # Build JSON payload using Python (handles all special characters safely)
           python3 -c "
 import json
 with open('$OLD_FILE', 'r') as f:
-    old = f.read()
+    old_content = f.read()
 with open('$NEW_FILE', 'r') as f:
-    new = f.read()
-payload = {'old_code': old, 'new_code': new, 'mode': '$MODE'}
+    new_content = f.read()
+payload = {'old_code': old_content, 'new_code': new_content, 'mode': '$MODE'}
 with open('$PAYLOAD_FILE', 'w') as f:
     json.dump(payload, f)
-print('Payload built: ' + str(len(json.dumps(payload))) + ' bytes')
+print('Payload size: ' + str(len(json.dumps(payload))) + ' bytes')
 "
 
-          # Clean up temp code files
           rm -f "$OLD_FILE" "$NEW_FILE"
 
-          echo "Sending to API..."
-
-          # Call API using payload file (avoids any shell quoting issues)
           set +e
           HTTP_CODE=$(curl -s -w "%{http_code}" \
             -o "$RESP_FILE" \
@@ -132,119 +119,88 @@ print('Payload built: ' + str(len(json.dumps(payload))) + ' bytes')
           CURL_EXIT=$?
           set -e
 
-          # Clean up payload file
           rm -f "$PAYLOAD_FILE"
 
-          echo "HTTP: $HTTP_CODE (curl exit: $CURL_EXIT)"
+          echo "HTTP: $HTTP_CODE curl_exit: $CURL_EXIT"
 
-          # Check curl succeeded
           if [ "$CURL_EXIT" -ne 0 ]; then
-            echo "❌ Network error (curl exit: $CURL_EXIT)"
+            echo "FAIL: Network error"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["Network error"]}' > "$REPORT_DIR/${file//\//_}.json"
             rm -f "$RESP_FILE"
             continue
           fi
 
-          # Check HTTP status
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ HTTP error: $HTTP_CODE"
-            cat "$RESP_FILE" 2>/dev/null | head -5 || true
+            echo "FAIL: HTTP $HTTP_CODE"
             FAIL_COUNT=$((FAIL_COUNT + 1))
-            echo "{\"status\":\"FAIL\",\"risk\":100,\"findings_count\":1,\"summary\":[\"HTTP $HTTP_CODE error\"]}" > "$REPORT_DIR/${file//\//_}.json"
+            echo "{\"status\":\"FAIL\",\"risk\":100,\"findings_count\":1,\"summary\":[\"HTTP $HTTP_CODE\"]}" > "$REPORT_DIR/${file//\//_}.json"
             rm -f "$RESP_FILE"
             continue
           fi
 
-          # Check response has content
           RESP_SIZE=$(wc -c < "$RESP_FILE" 2>/dev/null || echo 0)
           echo "Response size: $RESP_SIZE bytes"
 
           if [ "$RESP_SIZE" -eq 0 ]; then
-            echo "❌ Empty response from API"
+            echo "FAIL: Empty response"
             FAIL_COUNT=$((FAIL_COUNT + 1))
-            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["Empty API response"]}' > "$REPORT_DIR/${file//\//_}.json"
+            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["Empty response"]}' > "$REPORT_DIR/${file//\//_}.json"
             rm -f "$RESP_FILE"
             continue
           fi
 
-          # Validate JSON
           if ! jq empty "$RESP_FILE" 2>/dev/null; then
-            echo "❌ Invalid JSON response:"
-            cat "$RESP_FILE" | head -5
+            echo "FAIL: Invalid JSON"
+            cat "$RESP_FILE" | head -3
             FAIL_COUNT=$((FAIL_COUNT + 1))
-            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["Invalid JSON response"]}' > "$REPORT_DIR/${file//\//_}.json"
+            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["Invalid JSON"]}' > "$REPORT_DIR/${file//\//_}.json"
             rm -f "$RESP_FILE"
             continue
           fi
 
-          # Parse results
           STATUS=$(jq -r '.status // "FAIL"' "$RESP_FILE")
           RISK=$(jq -r '.risk // 100' "$RESP_FILE")
           FINDINGS=$(jq -r '.findings_count // 0' "$RESP_FILE")
 
-          # Save report
           cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
           rm -f "$RESP_FILE"
 
-          # Display results
-          echo "Status: $STATUS"
-          echo "Risk: $RISK/100"
-          echo "Findings: $FINDINGS"
+          echo "Status: $STATUS | Risk: $RISK/100 | Findings: $FINDINGS"
 
-          if [ "$FINDINGS" -gt 0 ] 2>/dev/null; then
-            echo "Summary:"
-            jq -r '.summary[]?' "$REPORT_DIR/${file//\//_}.json" 2>/dev/null | head -3 | sed 's/^/  • /' || true
-          fi
-
-          # Add to GitHub summary
           {
-            echo "### 📄 $file"
-            echo ""
+            echo "### $file"
             echo "- **Status:** $STATUS"
             echo "- **Risk:** $RISK/100"
             echo "- **Findings:** $FINDINGS"
             echo ""
-            if [ "$FINDINGS" -gt 0 ] 2>/dev/null; then
-              jq -r '.summary[]?' "$REPORT_DIR/${file//\//_}.json" 2>/dev/null | head -3 | sed 's/^/- /' || true
-              echo ""
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Update counters
           case "$STATUS" in
-            PASS) PASS_COUNT=$((PASS_COUNT + 1)); echo "✅ PASS" ;;
-            WARN) WARN_COUNT=$((WARN_COUNT + 1)); echo "⚠️  WARN" ;;
-            FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)); echo "❌ FAIL" ;;
-            *)    FAIL_COUNT=$((FAIL_COUNT + 1)); echo "❌ UNKNOWN: $STATUS" ;;
+            PASS) PASS_COUNT=$((PASS_COUNT + 1)); echo "PASS" ;;
+            WARN) WARN_COUNT=$((WARN_COUNT + 1)); echo "WARN" ;;
+            FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)); echo "FAIL" ;;
+            *)    FAIL_COUNT=$((FAIL_COUNT + 1)); echo "UNKNOWN: $STATUS" ;;
           esac
-          echo ""
+
         done
 
-        # Final summary
-        echo "════════════════════════════════════════"
-        echo "📊 Analysis Complete"
-        echo "════════════════════════════════════════"
-        echo "Total:    $TOTAL"
-        echo "✅ Passed:  $PASS_COUNT"
-        echo "⚠️  Warned:  $WARN_COUNT"
-        echo "❌ Failed:  $FAIL_COUNT"
-        echo "════════════════════════════════════════"
+        echo "========================================"
+        echo "Total: $TOTAL | Passed: $PASS_COUNT | Warned: $WARN_COUNT | Failed: $FAIL_COUNT"
+        echo "========================================"
 
         {
-          echo "## 📊 CRONOS Analysis Summary"
-          echo ""
-          echo "- **Total files:** $TOTAL"
-          echo "- **✅ Passed:** $PASS_COUNT"
-          echo "- **⚠️ Warnings:** $WARN_COUNT"
-          echo "- **❌ Failed:** $FAIL_COUNT"
-          echo ""
+          echo "## CRONOS Analysis Summary"
+          echo "- **Total:** $TOTAL"
+          echo "- **Passed:** $PASS_COUNT"
+          echo "- **Warnings:** $WARN_COUNT"
+          echo "- **Failed:** $FAIL_COUNT"
         } >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$FAIL_COUNT" -gt 0 ]; then
-          echo "🚫 BUILD BLOCKED - $FAIL_COUNT file(s) failed"
+          echo "BUILD BLOCKED - $FAIL_COUNT file(s) failed"
           exit 1
         else
-          echo "✅ BUILD APPROVED"
+          echo "BUILD APPROVED"
           exit 0
         fi
