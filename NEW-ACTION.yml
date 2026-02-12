@@ -21,10 +21,8 @@ runs:
     - name: Install dependencies
       shell: bash
       run: |
-        if ! command -v jq &> /dev/null; then
-          sudo apt-get update -qq
-          sudo apt-get install -y jq curl
-        fi
+        sudo apt-get update -qq
+        sudo apt-get install -y jq curl
 
     - name: Run CRONOS Analysis
       shell: bash
@@ -32,25 +30,19 @@ runs:
         API_URL: ${{ inputs.api_url }}
         MODE: ${{ inputs.mode }}
       run: |
-        set +e   # <-- IMPORTANT: prevents pipeline crash
+        set -euo pipefail
 
         API_URL="${API_URL%/}"
         REPORT_DIR="cronos-reports"
         mkdir -p "$REPORT_DIR"
 
-        echo "==============================="
-        echo "🚀 Running CRONOS Analysis"
+        echo "=========================================="
+        echo "🚀 CRONOS ANALYSIS"
         echo "API: $API_URL"
         echo "Mode: $MODE"
-        echo "==============================="
+        echo "=========================================="
 
-        echo "🔌 Checking API..."
-        if ! curl -sf --max-time 10 "$API_URL/" > /dev/null 2>&1; then
-          echo "❌ Cannot reach API at $API_URL"
-          exit 1
-        fi
-        echo "✅ API reachable"
-
+        # ---- Detect changed python files ----
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
         else
@@ -58,21 +50,29 @@ runs:
         fi
 
         if [ -z "$FILES" ]; then
-          echo "✅ No Python files changed — skipping."
+          echo "✅ No Python files changed — nothing to analyze."
+          echo "## ✅ CRONOS: No changes detected" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
+
+        echo "Files to analyze:"
+        echo "$FILES"
 
         FAIL_COUNT=0
         TOTAL=0
 
-        echo "## 🔍 CRONOS Analysis Report" >> "$GITHUB_STEP_SUMMARY"
-
         for file in $FILES; do
           TOTAL=$((TOTAL + 1))
-          echo "📄 Analyzing: $file"
+          RESP_FILE="/tmp/cronos_resp_${TOTAL}.json"
+
+          echo "🔍 Analyzing: $file"
 
           OLD_CODE=""
-          git show HEAD~1:"$file" 2>/dev/null || true
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            if git cat-file -e HEAD~1:"$file" 2>/dev/null; then
+              OLD_CODE=$(git show HEAD~1:"$file")
+            fi
+          fi
 
           NEW_CODE=$(cat "$file")
 
@@ -82,40 +82,40 @@ runs:
             --arg mode "$MODE" \
             '{old_code:$old, new_code:$new, mode:$mode}')
 
-          RESP_FILE="$REPORT_DIR/${file//\//_}.json"
-
           HTTP_CODE=$(curl -s -w "%{http_code}" \
             -o "$RESP_FILE" \
             -X POST "$API_URL/analyze_ci" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
-          echo "HTTP: $HTTP_CODE"
-
           if [ "$HTTP_CODE" != "200" ]; then
-            echo '{"status":"FAIL","risk":100,"error":"HTTP_ERROR"}' > "$RESP_FILE"
+            echo "❌ API returned $HTTP_CODE"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             continue
           fi
 
-          if [ ! -s "$RESP_FILE" ] || ! jq empty "$RESP_FILE" 2>/dev/null; then
-            echo '{"status":"FAIL","risk":100,"error":"INVALID_JSON"}' > "$RESP_FILE"
+          if ! jq empty "$RESP_FILE" 2>/dev/null; then
+            echo "❌ Invalid JSON from API"
             FAIL_COUNT=$((FAIL_COUNT + 1))
             continue
           fi
 
-          STATUS=$(jq -r '.status' "$RESP_FILE")
-          RISK=$(jq -r '.risk' "$RESP_FILE")
-          SUMMARY=$(jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null || echo "No issues detected")
+          STATUS=$(jq -r '.status // "FAIL"' "$RESP_FILE")
+          RISK=$(jq -r '.risk // 100' "$RESP_FILE")
+          FINDINGS=$(jq -r '.findings_count // 0' "$RESP_FILE")
 
-          echo "::notice::CRONOS → $file | Status=$STATUS | Risk=$RISK"
+          cp "$RESP_FILE" "$REPORT_DIR/${file//\//_}.json"
+
+          echo "Status: $STATUS | Risk: $RISK | Findings: $FINDINGS"
 
           {
-            echo "### File: \`$file\`"
+            echo "## 🔍 CRONOS Report — $file"
+            echo ""
             echo "**Status:** $STATUS"
             echo "**Risk:** $RISK / 100"
-            echo "**Findings:**"
-            echo "$SUMMARY" | sed 's/^/- /'
+            echo "**Findings:** $FINDINGS"
+            echo ""
+            jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null | sed 's/^/- /'
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -124,16 +124,15 @@ runs:
           fi
         done
 
-        echo "==============================="
-        echo "FINAL RESULT"
-        echo "Files checked: $TOTAL"
-        echo "Failures: $FAIL_COUNT"
-        echo "==============================="
+        echo "=========================================="
+        echo "TOTAL FILES: $TOTAL"
+        echo "FAILED: $FAIL_COUNT"
+        echo "=========================================="
 
-        if [ $FAIL_COUNT -gt 0 ]; then
-          echo "🚫 Build blocked due to CRONOS risk."
+        if [ "$FAIL_COUNT" -gt 0 ]; then
+          echo "🚫 BUILD BLOCKED — CRONOS detected risk."
           exit 1
         else
-          echo "✅ Build approved."
+          echo "✅ BUILD APPROVED"
           exit 0
         fi
