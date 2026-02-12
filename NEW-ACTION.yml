@@ -99,12 +99,21 @@ runs:
           NEW_CODE=$(cat "$file")
           
           # Build payload
-          PAYLOAD=$(jq -n \
-            --arg old "$OLD_CODE" \
-            --arg new "$NEW_CODE" \
-            --arg mode "$MODE" \
-            '{old_code:$old, new_code:$new, mode:$mode}')
-          
+         # Write code to temp files to avoid shell escaping issues
+OLD_FILE=$(mktemp)
+NEW_FILE=$(mktemp)
+git show HEAD~1:"$file" > "$OLD_FILE" 2>/dev/null || echo "" > "$OLD_FILE"
+cat "$file" > "$NEW_FILE"
+
+# Build JSON payload safely using Python
+PAYLOAD=$(python3 - <<PYEOF
+import json
+with open("$OLD_FILE") as f: old = f.read()
+with open("$NEW_FILE") as f: new = f.read()
+print(json.dumps({"old_code": old, "new_code": new, "mode": "$MODE"}))
+PYEOF
+)
+rm -f "$OLD_FILE" "$NEW_FILE"
           # Call API (with error handling)
           RESP_FILE="/tmp/cronos_${TOTAL}.json"
           
