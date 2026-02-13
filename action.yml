@@ -181,6 +181,7 @@ runs:
         done
 
         echo "Done: total=$TOTAL pass=$PASS_COUNT warn=$WARN_COUNT fail=$FAIL_COUNT"
+        printf '## CRONOS Summary\n- Passed: %s Warned: %s Failed: %s\n' "$PASS_COUNT" "$WARN_COUNT" "$FAIL_COUNT" >> "$GITHUB_STEP_SUMMARY"
         echo "## CRONOS Summary" >> "$GITHUB_STEP_SUMMARY"
         echo "- Passed: $PASS_COUNT Warned: $WARN_COUNT Failed: $FAIL_COUNT" >> "$GITHUB_STEP_SUMMARY"
 
