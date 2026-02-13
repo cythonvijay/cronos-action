@@ -1,7 +1,6 @@
 name: 'CRONOS Code Guard'
 description: 'Static analysis for Python code changes with risk assessment'
 author: 'cythonvijay'
-
 branding:
   icon: 'shield'
   color: 'blue'
@@ -16,13 +15,15 @@ inputs:
     default: 'STRICT'
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
     - name: Install dependencies
       shell: bash
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y jq curl
+        if ! command -v jq &>/dev/null || ! command -v curl &>/dev/null; then
+          sudo apt-get update -qq
+          sudo apt-get install -y jq curl
+        fi
 
     - name: Run CRONOS Analysis
       shell: bash
@@ -30,25 +31,39 @@ runs:
         API_URL: ${{ inputs.api_url }}
         MODE: ${{ inputs.mode }}
       run: |
-        set -e
+        set -euo pipefail
 
         API_URL="${API_URL%/}"
         REPORT_DIR="cronos-reports"
         mkdir -p "$REPORT_DIR"
 
         echo "====================================="
-        echo "CRONOS Analysis"
-        echo "Mode: $MODE"
-        echo "API: $API_URL"
+        echo "CRONOS Analysis - Mode=$MODE"
+        echo "API=$API_URL"
         echo "====================================="
 
-        # Health check
-        if ! curl -sSf "$API_URL/" > /dev/null; then
-          echo "ERROR: API unreachable at $API_URL"
+        # Validate API_URL is not empty before curl
+        if [ -z "$API_URL" ]; then
+          echo "ERROR: api_url input is empty. Set CRONOS_API_URL secret."
+          echo "## CRONOS: api_url is empty" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
 
+        # Health check - use set +e to safely capture curl exit code
+        set +e
+        curl -sf --max-time 10 "$API_URL/" > /dev/null 2>&1
+        HEALTH_EXIT=$?
+        set -e
+
+        if [ "$HEALTH_EXIT" -ne 0 ]; then
+          echo "ERROR: API unreachable at $API_URL (curl exit: $HEALTH_EXIT)"
+          echo "## CRONOS: API Unreachable" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        echo "API OK"
+
         # Detect changed Python files
+        FILES=""
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
         else
@@ -61,70 +76,143 @@ runs:
           exit 0
         fi
 
+        echo "Analyzing: $FILES"
         FAIL_COUNT=0
         WARN_COUNT=0
         PASS_COUNT=0
+        TOTAL=0
 
         for file in $FILES; do
-          if [ ! -f "$file" ]; then
+          [ ! -f "$file" ] && continue
+          TOTAL=$((TOTAL + 1))
+          echo "--- $file ---"
+
+          OLD_F=$(mktemp)
+          NEW_F=$(mktemp)
+          PAY_F=$(mktemp)
+          RES_F=$(mktemp)
+          SCR_F=$(mktemp).py
+
+          # Get old code safely
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            git show HEAD~1:"$file" > "$OLD_F" 2>/dev/null || true
+          fi
+          cp "$file" "$NEW_F"
+
+          # Build JSON payload using Python (handles all special chars)
+          printf 'import json\n' > "$SCR_F"
+          printf 'o=open("%s").read()\n' "$OLD_F" >> "$SCR_F"
+          printf 'n=open("%s").read()\n' "$NEW_F" >> "$SCR_F"
+          printf 'p={"old_code":o,"new_code":n,"mode":"%s"}\n' "$MODE" >> "$SCR_F"
+          printf 'open("%s","w").write(json.dumps(p))\n' "$PAY_F" >> "$SCR_F"
+          python3 "$SCR_F"
+          rm -f "$OLD_F" "$NEW_F" "$SCR_F"
+
+          # Call API safely
+          set +e
+          HTTP=$(curl -s -w "%{http_code}" -o "$RES_F" \
+            -X POST "$API_URL/analyze_ci" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            --max-time 60 \
+            -d "@$PAY_F")
+          CE=$?
+          set -e
+          rm -f "$PAY_F"
+
+          echo "HTTP=$HTTP curl_exit=$CE"
+          REPORT="$REPORT_DIR/$(echo $file | tr '/' '_').json"
+
+          # Handle curl failure
+          if [ "$CE" -ne 0 ]; then
+            echo "FAIL: curl error $CE"
+            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["curl error"]}' > "$REPORT"
+            FAIL_COUNT=$((FAIL_COUNT+1))
+            rm -f "$RES_F"
             continue
           fi
 
-          echo "-------------------------------------"
-          echo "Analyzing: $file"
-          echo "-------------------------------------"
-
-          OLD_CODE=""
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            OLD_CODE=$(git show HEAD~1:"$file" 2>/dev/null || echo "")
+          # Handle HTTP error
+          if [ "$HTTP" != "200" ]; then
+            echo "FAIL: HTTP $HTTP"
+            echo "{\"status\":\"FAIL\",\"risk\":100,\"findings_count\":1,\"summary\":[\"HTTP $HTTP\"]}" > "$REPORT"
+            FAIL_COUNT=$((FAIL_COUNT+1))
+            rm -f "$RES_F"
+            continue
           fi
 
-          NEW_CODE=$(cat "$file")
+          # Handle empty response
+          SZ=$(wc -c < "$RES_F" 2>/dev/null || echo 0)
+          if [ "$SZ" -eq 0 ]; then
+            echo "FAIL: empty response"
+            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["empty response"]}' > "$REPORT"
+            FAIL_COUNT=$((FAIL_COUNT+1))
+            rm -f "$RES_F"
+            continue
+          fi
 
-          PAYLOAD=$(jq -n \
-            --arg old "$OLD_CODE" \
-            --arg new "$NEW_CODE" \
-            --arg mode "$MODE" \
-            '{old_code:$old,new_code:$new,mode:$mode}')
+          # Handle invalid JSON
+          if ! jq empty "$RES_F" 2>/dev/null; then
+            echo "FAIL: invalid JSON"
+            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["invalid JSON"]}' > "$REPORT"
+            FAIL_COUNT=$((FAIL_COUNT+1))
+            rm -f "$RES_F"
+            continue
+          fi
 
-          RESPONSE=$(curl -s -X POST "$API_URL/analyze_ci" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+          # Parse results safely
+          ST=$(jq -r '.status//"FAIL"' "$RES_F")
+          RK=$(jq -r '.risk//100' "$RES_F")
+          FN=$(jq -r '.findings_count//0' "$RES_F")
+          cp "$RES_F" "$REPORT"
 
-          echo "$RESPONSE" > "$REPORT_DIR/$(echo "$file" | tr '/' '_').json"
+          echo "Status=$ST Risk=$RK Findings=$FN"
 
-          STATUS=$(echo "$RESPONSE" | jq -r '.status // "FAIL"' 2>/dev/null || echo "FAIL")
-          RISK=$(echo "$RESPONSE" | jq -r '.risk // 100' 2>/dev/null || echo "100")
+          # Read metadata fields safely (set -e safe)
+          if OLD_H=$(jq -r '.metadata.old_hash // empty' "$RES_F" 2>/dev/null) && [ -n "$OLD_H" ]; then
+            echo "Old Hash: $OLD_H"
+          fi
+          if NEW_H=$(jq -r '.metadata.new_hash // empty' "$RES_F" 2>/dev/null) && [ -n "$NEW_H" ]; then
+            echo "New Hash: $NEW_H"
+          fi
+          if AST_CH=$(jq -r '.metadata.ast_changed // empty' "$RES_F" 2>/dev/null) && [ -n "$AST_CH" ]; then
+            echo "AST Changed: $AST_CH"
+          fi
 
-          echo "Status: $STATUS"
-          echo "Risk: $RISK"
+          rm -f "$RES_F"
 
-          echo "### $file" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Status: $STATUS" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Risk: $RISK/100" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Write summary
+          {
+            echo "### $file"
+            echo "- Status: $ST"
+            echo "- Risk: $RK/100"
+            echo "- Findings: $FN"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          case "$STATUS" in
+          case "$ST" in
             PASS) PASS_COUNT=$((PASS_COUNT+1));;
             WARN) WARN_COUNT=$((WARN_COUNT+1));;
             *) FAIL_COUNT=$((FAIL_COUNT+1));;
           esac
+          echo "$ST"
         done
 
         echo "====================================="
-        echo "Summary"
-        echo "Passed: $PASS_COUNT"
-        echo "Warned: $WARN_COUNT"
-        echo "Failed: $FAIL_COUNT"
+        echo "Total=$TOTAL Pass=$PASS_COUNT Warn=$WARN_COUNT Fail=$FAIL_COUNT"
         echo "====================================="
 
-        echo "## CRONOS Summary" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Passed: $PASS_COUNT" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Warned: $WARN_COUNT" >> "$GITHUB_STEP_SUMMARY"
-        echo "- Failed: $FAIL_COUNT" >> "$GITHUB_STEP_SUMMARY"
+        {
+          echo "## CRONOS Summary"
+          echo "- Total: $TOTAL"
+          echo "- Passed: $PASS_COUNT"
+          echo "- Warned: $WARN_COUNT"
+          echo "- Failed: $FAIL_COUNT"
+        } >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$FAIL_COUNT" -gt 0 ]; then
+          echo "BUILD BLOCKED - $FAIL_COUNT file(s) failed"
           exit 1
         fi
-
+        echo "BUILD APPROVED"
         exit 0
