@@ -1,6 +1,7 @@
 name: 'CRONOS Code Guard'
 description: 'Static analysis for Python code changes with risk assessment'
 author: 'cythonvijay'
+
 branding:
   icon: 'shield'
   color: 'blue'
@@ -15,15 +16,13 @@ inputs:
     default: 'STRICT'
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
     - name: Install dependencies
       shell: bash
       run: |
-        if ! command -v jq >/dev/null 2>&1; then
-          sudo apt-get update -qq
-          sudo apt-get install -y jq curl
-        fi
+        sudo apt-get update -qq
+        sudo apt-get install -y jq curl
 
     - name: Run CRONOS Analysis
       shell: bash
@@ -31,18 +30,21 @@ runs:
         API_URL: ${{ inputs.api_url }}
         MODE: ${{ inputs.mode }}
       run: |
-        set -eo pipefail
+        set -e
 
         API_URL="${API_URL%/}"
         REPORT_DIR="cronos-reports"
         mkdir -p "$REPORT_DIR"
 
-        echo "Running CRONOS in $MODE mode"
+        echo "====================================="
+        echo "CRONOS Analysis"
+        echo "Mode: $MODE"
         echo "API: $API_URL"
+        echo "====================================="
 
         # Health check
-        if ! curl -sf --max-time 10 "$API_URL/" >/dev/null; then
-          echo "API unreachable"
+        if ! curl -sSf "$API_URL/" > /dev/null; then
+          echo "ERROR: API unreachable at $API_URL"
           exit 1
         fi
 
@@ -64,9 +66,13 @@ runs:
         PASS_COUNT=0
 
         for file in $FILES; do
-          [ ! -f "$file" ] && continue
+          if [ ! -f "$file" ]; then
+            continue
+          fi
 
+          echo "-------------------------------------"
           echo "Analyzing: $file"
+          echo "-------------------------------------"
 
           OLD_CODE=""
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
@@ -83,37 +89,19 @@ runs:
 
           RESPONSE=$(curl -s -X POST "$API_URL/analyze_ci" \
             -H "Content-Type: application/json" \
-            --max-time 60 \
             -d "$PAYLOAD")
 
-          if [ -z "$RESPONSE" ]; then
-            echo "Empty response from API"
-            FAIL_COUNT=$((FAIL_COUNT+1))
-            continue
-          fi
-
-          if ! echo "$RESPONSE" | jq empty >/dev/null 2>&1; then
-            echo "Invalid JSON response"
-            FAIL_COUNT=$((FAIL_COUNT+1))
-            continue
-          fi
-
-          STATUS=$(echo "$RESPONSE" | jq -r '.status // "FAIL"')
-          RISK=$(echo "$RESPONSE" | jq -r '.risk // 100')
-          FINDINGS=$(echo "$RESPONSE" | jq -r '.findings_count // 0')
-
-          echo "Status: $STATUS | Risk: $RISK | Findings: $FINDINGS"
-
           echo "$RESPONSE" > "$REPORT_DIR/$(echo "$file" | tr '/' '_').json"
+
+          STATUS=$(echo "$RESPONSE" | jq -r '.status // "FAIL"' 2>/dev/null || echo "FAIL")
+          RISK=$(echo "$RESPONSE" | jq -r '.risk // 100' 2>/dev/null || echo "100")
+
+          echo "Status: $STATUS"
+          echo "Risk: $RISK"
 
           echo "### $file" >> "$GITHUB_STEP_SUMMARY"
           echo "- Status: $STATUS" >> "$GITHUB_STEP_SUMMARY"
           echo "- Risk: $RISK/100" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Findings: $FINDINGS" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "#### Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "$RESPONSE" | jq -r '.summary[]?' | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
           case "$STATUS" in
@@ -123,6 +111,13 @@ runs:
           esac
         done
 
+        echo "====================================="
+        echo "Summary"
+        echo "Passed: $PASS_COUNT"
+        echo "Warned: $WARN_COUNT"
+        echo "Failed: $FAIL_COUNT"
+        echo "====================================="
+
         echo "## CRONOS Summary" >> "$GITHUB_STEP_SUMMARY"
         echo "- Passed: $PASS_COUNT" >> "$GITHUB_STEP_SUMMARY"
         echo "- Warned: $WARN_COUNT" >> "$GITHUB_STEP_SUMMARY"
@@ -131,3 +126,5 @@ runs:
         if [ "$FAIL_COUNT" -gt 0 ]; then
           exit 1
         fi
+
+        exit 0
