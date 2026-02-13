@@ -49,7 +49,6 @@ runs:
         echo "Testing API..."
         if ! curl -sf --max-time 10 "$API_URL/" > /dev/null 2>&1; then
           echo "❌ Cannot reach API"
-          echo "## ❌ CRONOS: API Unreachable" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
         echo "✅ API reachable"
@@ -65,7 +64,6 @@ runs:
         
         if [ -z "$FILES" ]; then
           echo "✅ No Python files changed"
-          echo "## ✅ CRONOS: No changes detected" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
         
@@ -170,20 +168,6 @@ runs:
             jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null | head -3 | sed 's/^/  • /'
           fi
           
-          # Add to GitHub summary
-          {
-            echo "### 📄 $file"
-            echo ""
-            echo "- **Status:** $STATUS"
-            echo "- **Risk:** $RISK/100"
-            echo "- **Findings:** $FINDINGS"
-            echo ""
-            if [ "$FINDINGS" -gt 0 ]; then
-              jq -r '.summary[]?' "$RESP_FILE" 2>/dev/null | head -3 | sed 's/^/- /'
-              echo ""
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          
           # Update counters
           case "$STATUS" in
             PASS) PASS_COUNT=$((PASS_COUNT + 1)); echo "✅ PASS" ;;
@@ -203,17 +187,6 @@ runs:
         echo "⚠️  Warnings: $WARN_COUNT"
         echo "❌ Failed: $FAIL_COUNT"
         echo "════════════════════════════════════════"
-        
-        # GitHub summary
-        {
-          echo "## 📊 CRONOS Analysis Summary"
-          echo ""
-          echo "- **Total files:** $TOTAL"
-          echo "- **✅ Passed:** $PASS_COUNT"
-          echo "- **⚠️ Warnings:** $WARN_COUNT"
-          echo "- **❌ Failed:** $FAIL_COUNT"
-          echo ""
-        } >> "$GITHUB_STEP_SUMMARY"
         
         # Exit with status
         if [ $FAIL_COUNT -gt 0 ]; then
