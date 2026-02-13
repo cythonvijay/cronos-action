@@ -41,14 +41,12 @@ runs:
         echo "API: $API_URL"
         echo "====================================="
 
-        # Step 1: Validate API_URL is not empty
         if [ -z "$API_URL" ]; then
           echo "ERROR: api_url is empty. Check CRONOS_API_URL secret."
           echo "## CRONOS: api_url secret is missing" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
 
-        # Step 2: Health check with safe curl (set +e prevents exit code 3)
         set +e
         curl -sf --max-time 15 "$API_URL/" > /dev/null 2>&1
         HEALTH_EXIT=$?
@@ -60,7 +58,6 @@ runs:
         fi
         echo "API OK"
 
-        # Step 3: Detect changed Python files
         FILES=""
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
@@ -74,35 +71,32 @@ runs:
           exit 0
         fi
 
-        echo "Files to analyze: $FILES"
+        echo "Files: $FILES"
 
         FAIL_COUNT=0
         WARN_COUNT=0
         PASS_COUNT=0
         TOTAL=0
 
-        # Step 4: Analyze each file
+        PARSER=$(mktemp).py
+        echo "aW1wb3J0IGpzb24sc3lzLHNodXRpbApyZXNfZixmaWxlbmFtZSxyZXBvcnRfZixzdW1tYXJ5X2Y9c3lzLmFyZ3ZbMV0sc3lzLmFyZ3ZbMl0sc3lzLmFyZ3ZbM10sc3lzLmFyZ3ZbNF0Kd2l0aCBvcGVuKHJlc19mKSBhcyBmOgogICAgZD1qc29uLmxvYWQoZikKc2h1dGlsLmNvcHkocmVzX2YscmVwb3J0X2YpCnN0YXR1cz1kLmdldCgic3RhdHVzIiwiRkFJTCIpO3Jpc2s9ZC5nZXQoInJpc2siLDEwMCk7ZmluZGluZ3Nfbj1kLmdldCgiZmluZGluZ3NfY291bnQiLDApCm1vZGU9ZC5nZXQoIm1vZGUiLCJVTktOT1dOIik7dGltZXN0YW1wPWQuZ2V0KCJ0aW1lc3RhbXAiLCJOL0EiKTtzdW1tYXJ5PWQuZ2V0KCJzdW1tYXJ5IixbXSkKcD1kLmdldCgicGFzcyIsRmFsc2UpO3c9ZC5nZXQoIndhcm4iLEZhbHNlKTtmYWlsPWQuZ2V0KCJmYWlsIixUcnVlKQptZXRhPWQuZ2V0KCJtZXRhZGF0YSIse30pO29sZF9oYXNoPW1ldGEuZ2V0KCJvbGRfaGFzaCIsIiIpO25ld19oYXNoPW1ldGEuZ2V0KCJuZXdfaGFzaCIsIiIpCmFzdF9jaD1tZXRhLmdldCgiYXN0X2NoYW5nZWQiLE5vbmUpO3NlbWFudGljPW1ldGEuZ2V0KCJzZW1hbnRpY19kaWZmIixOb25lKQpjYXRlZ29yaWVzPW1ldGEuZ2V0KCJjYXRlZ29yaWVzX2FuYWx5emVkIiwwKTtyaXNrX2JkPW1ldGEuZ2V0KCJyaXNrX2JyZWFrZG93biIse30pCnByaW50KCItLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0iKQpwcmludChmIiAgRmlsZSAgICAgICA6IHtmaWxlbmFtZX0iKQpwcmludChmIiAgU3RhdHVzICAgICA6IHtzdGF0dXN9IikKcHJpbnQoZiIgIFJpc2sgU2NvcmUgOiB7cmlza30vMTAwIikKcHJpbnQoZiIgIE1vZGUgICAgICAgOiB7bW9kZX0iKQpwcmludChmIiAgRmluZGluZ3MgICA6IHtmaW5kaW5nc19ufSIpCnByaW50KGYiICBUaW1lc3RhbXAgIDoge3RpbWVzdGFtcH0iKQppZiBhc3RfY2ggaXMgbm90IE5vbmU6cHJpbnQoZiIgIEFTVCBDaGFuZ2VkOiB7YXN0X2NofSIpCmlmIHNlbWFudGljIGlzIG5vdCBOb25lOnByaW50KGYiICBTZW1hbnRpYyAgIDoge3NlbWFudGljfSIpCmlmIG9sZF9oYXNoOnByaW50KGYiICBPbGQgSGFzaCAgIDoge29sZF9oYXNoWzoxNl19Li4uIikKaWYgbmV3X2hhc2g6cHJpbnQoZiIgIE5ldyBIYXNoICAgOiB7bmV3X2hhc2hbOjE2XX0uLi4iKQppZiBjYXRlZ29yaWVzOnByaW50KGYiICBDYXRlZ29yaWVzIDoge2NhdGVnb3JpZXN9IGFuYWx5emVkIikKaWYgc3VtbWFyeToKICAgIHByaW50KCIgIEZpbmRpbmdzIERldGFpbDoiKQogICAgZm9yIGkscyBpbiBlbnVtZXJhdGUoc3VtbWFyeSwxKTpwcmludChmIiAgICB7aX0uIHtzfSIpCmlmIHJpc2tfYmQ6CiAgICBhY3RpdmU9e2s6diBmb3Igayx2IGluIHJpc2tfYmQuaXRlbXMoKSBpZiB2PjB9CiAgICBpZiBhY3RpdmU6CiAgICAgICAgcHJpbnQoIiAgUmlzayBCcmVha2Rvd246IikKICAgICAgICBmb3IgY2F0LHZhbCBpbiBhY3RpdmUuaXRlbXMoKTpwcmludChmIiAgICAtIHtjYXQucmVwbGFjZShjaHIoOTUpLGNocigzMikpLnRpdGxlKCl9OiB7dmFsfS8xMDAiKQpwcmludCgiLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tIikKZW1vamk9IlxVMDAwMWY1MzQiIGlmIGZhaWwgZWxzZSgiXFUwMDAxZjdlMSIgaWYgdyBlbHNlIlxVMDAwMWY3ZTIiKQp2ZXJkaWN0PSJGQUlMIiBpZiBmYWlsIGVsc2UoIldBUk4iIGlmIHcgZWxzZSJQQVNTIikKd2l0aCBvcGVuKHN1bW1hcnlfZiwiYSIpIGFzIHNmOgogICAgc2Yud3JpdGUoZiIjIyMge2Vtb2ppfSB7dmVyZGljdH0gLSBge2ZpbGVuYW1lfWBcblxuIikKICAgIHNmLndyaXRlKCJ8IEZpZWxkIHwgVmFsdWUgfFxufC0tLXwtLS18XG4iKQogICAgc2Yud3JpdGUoZiJ8IFN0YXR1cyB8ICoqe3N0YXR1c30qKiB8XG4iKQogICAgc2Yud3JpdGUoZiJ8IFJpc2sgU2NvcmUgfCAqKntyaXNrfS8xMDAqKiB8XG4iKQogICAgc2Yud3JpdGUoZiJ8IE1vZGUgfCB7bW9kZX0gfFxuIikKICAgIHNmLndyaXRlKGYifCBGaW5kaW5ncyB8IHtmaW5kaW5nc19ufSB8XG4iKQogICAgc2Yud3JpdGUoZiJ8IEFTVCBDaGFuZ2VkIHwge2FzdF9jaH0gfFxuIikKICAgIHNmLndyaXRlKGYifCBTZW1hbnRpYyBEaWZmIHwge3NlbWFudGljfSB8XG4iKQogICAgc2Yud3JpdGUoZiJ8IFRpbWVzdGFtcCB8IHt0aW1lc3RhbXB9IHxcbiIpCiAgICBpZiBvbGRfaGFzaDpzZi53cml0ZShmInwgT2xkIEhhc2ggfCBge29sZF9oYXNoWzoxNl19Li4uYCB8XG4iKQogICAgaWYgbmV3X2hhc2g6c2Yud3JpdGUoZiJ8IE5ldyBIYXNoIHwgYHtuZXdfaGFzaFs6MTZdfS4uLmAgfFxuIikKICAgIHNmLndyaXRlKCJcbiIpCiAgICBpZiBzdW1tYXJ5OgogICAgICAgIHNmLndyaXRlKCIjIyMjIEZpbmRpbmdzIERldGFpbFxuXG4iKQogICAgICAgIGZvciBpLHMgaW4gZW51bWVyYXRlKHN1bW1hcnksMSk6c2Yud3JpdGUoZiJ7aX0uIHtzfVxuIikKICAgICAgICBzZi53cml0ZSgiXG4iKQogICAgaWYgcmlza19iZDoKICAgICAgICBhY3RpdmU9e2s6diBmb3Igayx2IGluIHJpc2tfYmQuaXRlbXMoKSBpZiB2PjB9CiAgICAgICAgaWYgYWN0aXZlOgogICAgICAgICAgICBzZi53cml0ZSgiIyMjIyBSaXNrIEJyZWFrZG93biBieSBDYXRlZ29yeVxuXG4iKQogICAgICAgICAgICBzZi53cml0ZSgifCBDYXRlZ29yeSB8IFJpc2sgfFxufC0tLXwtLS18XG4iKQogICAgICAgICAgICBmb3IgY2F0LHZhbCBpbiBhY3RpdmUuaXRlbXMoKTpzZi53cml0ZShmInwge2NhdC5yZXBsYWNlKGNocig5NSksY2hyKDMyKSkudGl0bGUoKX0gfCB7dmFsfS8xMDAgfFxuIikKICAgICAgICAgICAgc2Yud3JpdGUoIlxuIikKc3lzLmV4aXQoMCBpZiBzdGF0dXM9PSJQQVNTIiBlbHNlKDIgaWYgc3RhdHVzPT0iV0FSTiIgZWxzZSAxKSkK" | base64 -d > "$PARSER"
+
         for file in $FILES; do
           [ ! -f "$file" ] && continue
           TOTAL=$((TOTAL + 1))
-
           echo ""
-          echo "--- Analyzing: $file ---"
+          echo "=========================================="
+          echo "Analyzing: $file"
+          echo "=========================================="
 
-          # Temp files
-          OLD_F=$(mktemp)
-          NEW_F=$(mktemp)
-          PAY_F=$(mktemp)
-          RES_F=$(mktemp)
-          SCR_F=$(mktemp).py
+          OLD_F=$(mktemp); NEW_F=$(mktemp); PAY_F=$(mktemp)
+          RES_F=$(mktemp); SCR_F=$(mktemp).py
 
-          # Get old version
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             git show HEAD~1:"$file" > "$OLD_F" 2>/dev/null || true
           fi
           cp "$file" "$NEW_F"
 
-          # Build JSON payload using Python (100% safe with all special chars)
           printf 'import json\n'                                          > "$SCR_F"
           printf 'o=open("%s").read()\n'                    "$OLD_F"    >> "$SCR_F"
           printf 'n=open("%s").read()\n'                    "$NEW_F"    >> "$SCR_F"
@@ -111,7 +105,6 @@ runs:
           python3 "$SCR_F"
           rm -f "$OLD_F" "$NEW_F" "$SCR_F"
 
-          # Call API with safe curl
           set +e
           HTTP=$(curl -s -w "%{http_code}" -o "$RES_F" \
             -X POST "$API_URL/analyze_ci" \
@@ -126,87 +119,60 @@ runs:
           echo "HTTP=$HTTP curl_exit=$CE"
           REPORT="$REPORT_DIR/$(echo "$file" | tr '/' '_').json"
 
-          # Handle curl failure
           if [ "$CE" -ne 0 ]; then
-            echo "FAIL: curl error $CE for $file"
             printf '{"status":"FAIL","risk":100,"findings_count":1,"summary":["curl error %s"]}\n' "$CE" > "$REPORT"
-            rm -f "$RES_F"
-            FAIL_COUNT=$((FAIL_COUNT+1))
-            continue
+            rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
           fi
-
-          # Handle non-200
           if [ "$HTTP" != "200" ]; then
-            echo "FAIL: HTTP $HTTP for $file"
             printf '{"status":"FAIL","risk":100,"findings_count":1,"summary":["HTTP error %s"]}\n' "$HTTP" > "$REPORT"
-            rm -f "$RES_F"
-            FAIL_COUNT=$((FAIL_COUNT+1))
-            continue
+            rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
           fi
 
-          # Handle empty response
           SZ=$(wc -c < "$RES_F" 2>/dev/null || echo 0)
           if [ "$SZ" -eq 0 ]; then
-            echo "FAIL: empty API response for $file"
             echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["empty response"]}' > "$REPORT"
-            rm -f "$RES_F"
-            FAIL_COUNT=$((FAIL_COUNT+1))
-            continue
+            rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
           fi
 
-          # Handle invalid JSON
           if ! python3 -c "import json,sys; json.load(open('$RES_F'))" 2>/dev/null; then
-            echo "FAIL: invalid JSON response for $file"
             echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["invalid JSON"]}' > "$REPORT"
-            rm -f "$RES_F"
-            FAIL_COUNT=$((FAIL_COUNT+1))
-            continue
+            rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
           fi
 
-          # Parse results using Python (no jq dependency for core logic)
-          ST=$(python3 -c "import json; d=json.load(open('$RES_F')); print(d.get('status','FAIL'))")
-          RK=$(python3 -c "import json; d=json.load(open('$RES_F')); print(d.get('risk',100))")
-          FN=$(python3 -c "import json; d=json.load(open('$RES_F')); print(d.get('findings_count',0))")
-
-          cp "$RES_F" "$REPORT"
+          set +e
+          python3 "$PARSER" "$RES_F" "$file" "$REPORT" "$GITHUB_STEP_SUMMARY"
+          PY_EXIT=$?
+          set -e
           rm -f "$RES_F"
 
-          echo "Status=$ST Risk=$RK Findings=$FN"
-
-          # GitHub Step Summary
-          {
-            echo "### $file"
-            echo "- Status: $ST"
-            echo "- Risk: $RK/100"
-            echo "- Findings: $FN"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # Count results
-          case "$ST" in
-            PASS) PASS_COUNT=$((PASS_COUNT+1)) ;;
-            WARN) WARN_COUNT=$((WARN_COUNT+1)) ;;
-            *)    FAIL_COUNT=$((FAIL_COUNT+1)) ;;
-          esac
+          if   [ "$PY_EXIT" -eq 0 ]; then PASS_COUNT=$((PASS_COUNT+1))
+          elif [ "$PY_EXIT" -eq 2 ]; then WARN_COUNT=$((WARN_COUNT+1))
+          else                             FAIL_COUNT=$((FAIL_COUNT+1))
+          fi
         done
 
-        # Final summary
+        rm -f "$PARSER"
+
         echo ""
         echo "====================================="
         echo "Total=$TOTAL Pass=$PASS_COUNT Warn=$WARN_COUNT Fail=$FAIL_COUNT"
         echo "====================================="
 
         {
-          echo "## CRONOS Summary"
-          echo "- Total: $TOTAL"
-          echo "- Passed: $PASS_COUNT"
-          echo "- Warned: $WARN_COUNT"
-          echo "- Failed: $FAIL_COUNT"
+          echo "---"
+          echo "## CRONOS Final Summary"
+          echo ""
+          echo "| | Count |"
+          echo "|---|---|"
+          echo "| Passed | $PASS_COUNT |"
+          echo "| Warned | $WARN_COUNT |"
+          echo "| Failed | $FAIL_COUNT |"
+          echo "| Total  | $TOTAL |"
         } >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$FAIL_COUNT" -gt 0 ]; then
-          echo "BUILD BLOCKED - $FAIL_COUNT file(s) failed CRONOS analysis"
+          echo "BUILD BLOCKED - $FAIL_COUNT file(s) failed"
           exit 1
         fi
-        echo "BUILD APPROVED - all files passed CRONOS analysis"
+        echo "BUILD APPROVED"
         exit 0
