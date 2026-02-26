@@ -2,7 +2,8 @@ name: "CRONOS Enterprise Intelligence"
 
 description: >
   CRONOS Enterprise Code Intelligence Engine.
-  Performs fast CI gate analysis and full AI intelligence analysis.
+  Runs full AI intelligence analysis with explanations for every stage.
+  Stages: BOUNDARY → CONTRACT → STRICT → UNIFIED INTELLIGENCE.
 
 author: "CRONOS"
 
@@ -13,36 +14,48 @@ branding:
 inputs:
 
   api_url:
+    description: "Base URL of the CRONOS API (e.g. https://your-api.onrender.com)"
     required: true
 
   mode:
+    description: "Analysis mode: STRICT | BOUNDARY | CONTRACT"
     required: true
     default: "STRICT"
 
   repo:
+    description: "Repository slug (owner/repo) for history tracking"
     required: false
+    default: ""
 
   github_token:
+    description: "GitHub token for PR comments and check runs"
     required: false
+    default: ""
 
   pr_number:
+    description: "Pull request number (for PR comments)"
     required: false
+    default: ""
 
   post_pr_comment:
+    description: "Set to 'true' to post a PR comment with the full intelligence report"
     required: false
     default: "false"
 
   create_annotations:
+    description: "Set to 'true' to emit GitHub Actions inline annotations on failure"
     required: false
     default: "true"
 
   fail_on_severity:
+    description: "Fail the step when this severity or higher is detected (CRITICAL|HIGH|MEDIUM|LOW)"
     required: false
     default: "HIGH"
 
   full_analysis:
+    description: "Set to 'true' to use /analyze_full (with AI explanations). Always 'true' for intelligence stages."
     required: false
-    default: "false"
+    default: "true"
 
 runs:
   using: "composite"
@@ -66,146 +79,305 @@ runs:
         REPO="${{ inputs.repo }}"
         TOKEN="${{ inputs.github_token }}"
         PR="${{ inputs.pr_number }}"
-        FULL="${{ inputs.full_analysis }}"
         FAIL_LEVEL="${{ inputs.fail_on_severity }}"
         CREATE_ANNOT="${{ inputs.create_annotations }}"
         POST_COMMENT="${{ inputs.post_pr_comment }}"
 
+        # Always use /analyze_full so all 4 explanation fields are present.
+        # full_analysis input is respected but we always call /analyze_full
+        # when full_analysis=true (the default for all CRONOS stages).
+        FULL="${{ inputs.full_analysis }}"
+
         mkdir -p cronos-reports
 
         echo ""
-        echo "=============================================="
-        echo "CRONOS v8 Enterprise Intelligence Engine"
-        echo "Mode: $MODE"
-        echo "Full Analysis: $FULL"
-        echo "Repository: $REPO"
-        echo "=============================================="
+        echo "=============================================================="
+        echo "  CRONOS v8 Enterprise Intelligence Engine"
+        echo "  Mode         : $MODE"
+        echo "  Full Analysis: $FULL"
+        echo "  Repository   : $REPO"
+        echo "  Fail Level   : $FAIL_LEVEL"
+        echo "=============================================================="
 
-        FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.py$' || true)
+        # Collect changed Python files (gracefully handle no diff)
+        FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -E '\.py$' || true)
 
         if [ -z "$FILES" ]; then
-          echo "No Python files changed."
+          echo ""
+          echo "ℹ️  No Python files changed — skipping CRONOS analysis."
           exit 0
         fi
 
-        FAIL=0
+        GLOBAL_FAIL=0
 
         for FILE in $FILES; do
 
           echo ""
-          echo "Analyzing: $FILE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Analyzing: $FILE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-          OLD=$(git show HEAD~1:$FILE 2>/dev/null || echo "")
-          NEW=$(cat "$FILE")
+          # Get old and new code safely
+          OLD_CODE=$(git show HEAD~1:"$FILE" 2>/dev/null || echo "")
+          NEW_CODE=$(cat "$FILE" 2>/dev/null || echo "")
 
-          if [ "$FULL" = "true" ]; then
-
-            RESPONSE=$(curl -s -X POST "$API/analyze_full" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -n \
-                --arg old "$OLD" \
-                --arg new "$NEW" \
-                --arg mode "$MODE" \
-                --arg repo "$REPO" \
-                --arg file "$FILE" \
-                '{old_code:$old,new_code:$new,mode:$mode,repo:$repo,file:$file}')")
-
-          else
-
-            RESPONSE=$(curl -s -X POST "$API/analyze_ci" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -n \
-                --arg old "$OLD" \
-                --arg new "$NEW" \
-                --arg mode "$MODE" \
-                '{old_code:$old,new_code:$new,mode:$mode}')")
-
+          if [ -z "$NEW_CODE" ]; then
+            echo "  ⚠️  File is empty or unreadable — skipping."
+            continue
           fi
 
+          # Build JSON payload safely using jq (handles all special characters)
+          PAYLOAD=$(jq -n \
+            --arg old  "$OLD_CODE" \
+            --arg new  "$NEW_CODE" \
+            --arg mode "$MODE" \
+            --arg repo "$REPO" \
+            --arg file "$FILE" \
+            '{old_code: $old, new_code: $new, mode: $mode, repo: $repo, file: $file}')
 
-          echo "$RESPONSE" > cronos-reports/$(basename $FILE).json
+          # Choose endpoint
+          if [ "$FULL" = "true" ]; then
+            ENDPOINT="$API/analyze_full"
+          else
+            ENDPOINT="$API/analyze_ci"
+          fi
 
-          STATUS=$(echo "$RESPONSE" | jq -r '.status')
-          SEVERITY=$(echo "$RESPONSE" | jq -r '.severity')
-          RISK=$(echo "$RESPONSE" | jq -r '.risk_score')
+          echo "  Endpoint: $ENDPOINT"
 
-          TECH=$(echo "$RESPONSE" | jq -r '.technical_explanation // empty')
-          HUMAN=$(echo "$RESPONSE" | jq -r '.human_explanation // empty')
-          REASON=$(echo "$RESPONSE" | jq -r '.risk_reasoning // empty')
-          IMPACT=$(echo "$RESPONSE" | jq -r '.behavioral_impact // empty')
+          # Call API with retry on transient failure
+          HTTP_STATUS=""
+          RESPONSE=""
+          for ATTEMPT in 1 2 3; do
+            HTTP_RESPONSE=$(curl -s -w "\n__HTTP_STATUS__%{http_code}" \
+              -X POST "$ENDPOINT" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD" \
+              --max-time 120 \
+              --retry 0 \
+              2>/dev/null || echo "")
+
+            HTTP_STATUS=$(echo "$HTTP_RESPONSE" | grep "__HTTP_STATUS__" | sed 's/__HTTP_STATUS__//')
+            RESPONSE=$(echo "$HTTP_RESPONSE" | grep -v "__HTTP_STATUS__")
+
+            if [ -n "$HTTP_STATUS" ] && [ "$HTTP_STATUS" != "000" ]; then
+              break
+            fi
+            echo "  ⚠️  Attempt $ATTEMPT failed — retrying in 5s..."
+            sleep 5
+          done
+
+          # Validate response is valid JSON
+          if ! echo "$RESPONSE" | jq empty 2>/dev/null; then
+            echo "  ❌ CRONOS API returned invalid JSON (HTTP $HTTP_STATUS)"
+            echo "  Raw response: ${RESPONSE:0:500}"
+            echo "  Treating as FAIL for safety."
+            GLOBAL_FAIL=1
+            continue
+          fi
+
+          # Save report
+          SAFE_FILE=$(echo "$FILE" | tr '/' '_')
+          REPORT_PATH="cronos-reports/${MODE}_${SAFE_FILE}.json"
+          echo "$RESPONSE" > "$REPORT_PATH"
+
+          # Extract fields (default to safe values if missing)
+          STATUS=$(echo   "$RESPONSE" | jq -r '.status   // "UNKNOWN"')
+          SEVERITY=$(echo "$RESPONSE" | jq -r '.severity // "UNKNOWN"')
+          RISK=$(echo     "$RESPONSE" | jq -r '.risk_score // .risk // 0')
+          QUALITY=$(echo  "$RESPONSE" | jq -r '.quality_score  // "N/A"')
+          SECURITY=$(echo "$RESPONSE" | jq -r '.security_score // "N/A"')
+          OVERALL=$(echo  "$RESPONSE" | jq -r '.overall_score  // "N/A"')
+          REPORT_ID=$(echo "$RESPONSE" | jq -r '.report_id // ""')
+
+          OLD_HASH=$(echo     "$RESPONSE" | jq -r '.old_hash      // "N/A"')
+          NEW_HASH=$(echo     "$RESPONSE" | jq -r '.new_hash      // "N/A"')
+          SEM_HASH=$(echo     "$RESPONSE" | jq -r '.semantic_hash // "N/A"')
+
+          TECH=$(echo   "$RESPONSE" | jq -r '.technical_explanation // ""')
+          HUMAN=$(echo  "$RESPONSE" | jq -r '.human_explanation     // ""')
+          REASON=$(echo "$RESPONSE" | jq -r '.risk_reasoning        // ""')
+          IMPACT=$(echo "$RESPONSE" | jq -r '.behavioral_impact     // ""')
+          AI_PROV=$(echo "$RESPONSE" | jq -r '.ai_provider // "None"')
+
+          BEH_CHANGED=$(echo "$RESPONSE" | jq -r '.behavior.changed // false')
+          BEH_SUMMARY=$(echo "$RESPONSE" | jq -r '.behavior.summary // ""')
+
+          EXEC_OUTS=$(echo "$RESPONSE" | jq -r '.execution_prediction.possible_outputs[]? // empty' | head -5 || true)
+          EXEC_EXCS=$(echo "$RESPONSE" | jq -r '.execution_prediction.exceptions[]?        // empty' | head -3 || true)
+
+          # ── Print structured results ──────────────────────────────────────
+          echo ""
+          echo "  ┌─────────────────────────────────────────────────────────┐"
+          echo "  │  CRONOS [$MODE] Result"
+          echo "  ├─────────────────────────────────────────────────────────┤"
+          printf "  │  Status          : %-38s│\n" "$STATUS"
+          printf "  │  Severity        : %-38s│\n" "$SEVERITY"
+          printf "  │  Risk Score      : %-38s│\n" "${RISK}/100"
+          printf "  │  Security Score  : %-38s│\n" "${SECURITY}/100"
+          printf "  │  Quality Score   : %-38s│\n" "${QUALITY}/100"
+          printf "  │  Overall Score   : %-38s│\n" "${OVERALL}/100"
+          printf "  │  AI Provider     : %-38s│\n" "$AI_PROV"
+          echo "  ├─────────────────────────────────────────────────────────┤"
+          printf "  │  Old Hash        : %-38s│\n" "${OLD_HASH:0:38}"
+          printf "  │  New Hash        : %-38s│\n" "${NEW_HASH:0:38}"
+          printf "  │  Semantic Hash   : %-38s│\n" "${SEM_HASH:0:38}"
+          echo "  ├─────────────────────────────────────────────────────────┤"
+          printf "  │  Behavior Changed: %-38s│\n" "$BEH_CHANGED"
+          if [ -n "$BEH_SUMMARY" ]; then
+            printf "  │  Behavior Summary: %-38s│\n" "${BEH_SUMMARY:0:38}"
+          fi
+          echo "  └─────────────────────────────────────────────────────────┘"
+
+          # ── Print AI Explanations (always, even on failure) ───────────────
+          echo ""
+          echo "  ════════════════════════════════════════════════════════════"
+          echo "  🧠 TECHNICAL EXPLANATION"
+          echo "  ════════════════════════════════════════════════════════════"
+          if [ -n "$TECH" ]; then
+            echo "$TECH" | fold -s -w 76 | sed 's/^/  /'
+          else
+            echo "  [Not available]"
+          fi
 
           echo ""
-          echo "Result:"
-          echo "Status   : $STATUS"
-          echo "Severity : $SEVERITY"
-          echo "Risk     : $RISK"
-
-
-          # PRINT AI EXPLANATION (THIS WAS MISSING)
-          if [ "$FULL" = "true" ]; then
-
-            echo ""
-            echo "Technical Explanation:"
-            echo "$TECH"
-
-            echo ""
-            echo "Human Explanation:"
-            echo "$HUMAN"
-
-            echo ""
-            echo "Risk Reasoning:"
-            echo "$REASON"
-
-            echo ""
-            echo "Behavior Impact:"
-            echo "$IMPACT"
-
+          echo "  ════════════════════════════════════════════════════════════"
+          echo "  💬 HUMAN EXPLANATION"
+          echo "  ════════════════════════════════════════════════════════════"
+          if [ -n "$HUMAN" ]; then
+            echo "$HUMAN" | fold -s -w 76 | sed 's/^/  /'
+          else
+            echo "  [Not available]"
           fi
 
-
-          # CREATE ANNOTATIONS
-          if [ "$CREATE_ANNOT" = "true" ] && [ "$STATUS" = "FAIL" ]; then
-
-            echo "::error file=$FILE,title=CRONOS Intelligence::$HUMAN"
-
+          echo ""
+          echo "  ════════════════════════════════════════════════════════════"
+          echo "  📊 RISK REASONING"
+          echo "  ════════════════════════════════════════════════════════════"
+          if [ -n "$REASON" ]; then
+            echo "$REASON" | fold -s -w 76 | sed 's/^/  /'
+          else
+            echo "  [Not available]"
           fi
 
+          echo ""
+          echo "  ════════════════════════════════════════════════════════════"
+          echo "  🔁 BEHAVIORAL IMPACT"
+          echo "  ════════════════════════════════════════════════════════════"
+          if [ -n "$IMPACT" ]; then
+            echo "$IMPACT" | fold -s -w 76 | sed 's/^/  /'
+          else
+            echo "  [Not available]"
+          fi
 
-          # POST PR COMMENT
+          # ── Execution prediction ──────────────────────────────────────────
+          if [ -n "$EXEC_OUTS" ]; then
+            echo ""
+            echo "  ════════════════════════════════════════════════════════════"
+            echo "  ⚡ EXECUTION PREDICTION"
+            echo "  ════════════════════════════════════════════════════════════"
+            echo "$EXEC_OUTS" | while IFS= read -r line; do echo "    • $line"; done
+          fi
+
+          if [ -n "$EXEC_EXCS" ]; then
+            echo ""
+            echo "  ⚠️  Exception Risks:"
+            echo "$EXEC_EXCS" | while IFS= read -r line; do echo "    ⚠️  $line"; done
+          fi
+
+          # ── GitHub Annotations (inline, only on FAIL) ─────────────────────
+          if [ "$CREATE_ANNOT" = "true" ]; then
+            if [ "$STATUS" = "FAIL" ]; then
+              ANNOT_MSG="${HUMAN:-CRONOS detected issues in $FILE}"
+              # Sanitise: strip newlines for annotation
+              ANNOT_SINGLE=$(echo "$ANNOT_MSG" | tr '\n' ' ' | cut -c1-250)
+              echo "::error file=$FILE,title=CRONOS [$MODE] $SEVERITY::$ANNOT_SINGLE"
+            elif [ "$STATUS" = "WARN" ]; then
+              ANNOT_MSG="${HUMAN:-CRONOS detected warnings in $FILE}"
+              ANNOT_SINGLE=$(echo "$ANNOT_MSG" | tr '\n' ' ' | cut -c1-250)
+              echo "::warning file=$FILE,title=CRONOS [$MODE] $SEVERITY::$ANNOT_SINGLE"
+            fi
+          fi
+
+          # ── Post PR Comment (full analysis only) ──────────────────────────
           if [ "$FULL" = "true" ] && \
              [ "$POST_COMMENT" = "true" ] && \
-             [ "$PR" != "" ] && \
-             [ "$TOKEN" != "" ]; then
+             [ -n "$PR" ] && \
+             [ -n "$TOKEN" ] && \
+             [ -n "$REPORT_ID" ]; then
 
-            REPORT_ID=$(echo "$RESPONSE" | jq -r '.report_id')
+            echo ""
+            echo "  Posting PR comment for report $REPORT_ID ..."
 
-            curl -s -X POST "$API/github/pr_comment" \
+            # Parse owner from REPO (format: owner/repo)
+            OWNER_PART=$(echo "$REPO" | cut -d'/' -f1)
+            REPO_PART=$(echo "$REPO"  | cut -d'/' -f2)
+
+            COMMENT_PAYLOAD=$(jq -n \
+              --arg rid   "$REPORT_ID" \
+              --arg pr    "$PR" \
+              --arg owner "$OWNER_PART" \
+              --arg repo  "$REPO_PART" \
+              --arg token "$TOKEN" \
+              '{
+                report_id:    $rid,
+                pr_number:    ($pr | tonumber),
+                owner:        $owner,
+                repo:         $repo,
+                github_token: $token
+              }')
+
+            COMMENT_RESP=$(curl -s -X POST "$API/github/pr_comment" \
               -H "Content-Type: application/json" \
-              -d "$(jq -n \
-                --arg id "$REPORT_ID" \
-                --arg pr "$PR" \
-                --arg repo "$REPO" \
-                --arg token "$TOKEN" \
-                '{report_id:$id,pr_number:($pr|tonumber),repo:$repo,github_token:$token}')"
+              -d "$COMMENT_PAYLOAD" \
+              --max-time 30 \
+              2>/dev/null || echo '{"success":false}')
 
+            COMMENT_OK=$(echo "$COMMENT_RESP" | jq -r '.success // false')
+            if [ "$COMMENT_OK" = "true" ]; then
+              echo "  ✅ PR comment posted successfully."
+            else
+              echo "  ⚠️  PR comment post failed (non-fatal): $COMMENT_RESP"
+            fi
           fi
 
+          # ── Severity-based fail gate ──────────────────────────────────────
+          # Map severity levels to numeric ranks for comparison
+          rank_severity() {
+            case "$1" in
+              CRITICAL) echo 4 ;;
+              HIGH)     echo 3 ;;
+              MEDIUM)   echo 2 ;;
+              LOW)      echo 1 ;;
+              SAFE)     echo 0 ;;
+              *)        echo 0 ;;
+            esac
+          }
 
-          # FAIL GATE
-          if [ "$SEVERITY" = "$FAIL_LEVEL" ] || \
-             [ "$SEVERITY" = "CRITICAL" ]; then
-              FAIL=1
+          SEV_RANK=$(rank_severity "$SEVERITY")
+          FAIL_RANK=$(rank_severity "$FAIL_LEVEL")
+
+          if [ "$SEV_RANK" -ge "$FAIL_RANK" ] && [ "$FAIL_RANK" -gt 0 ]; then
+            echo ""
+            echo "  🔴 CRONOS FAIL: $FILE — Severity=$SEVERITY meets fail threshold ($FAIL_LEVEL)"
+            GLOBAL_FAIL=1
+          else
+            echo ""
+            echo "  ✅ CRONOS PASS: $FILE — Severity=$SEVERITY below threshold ($FAIL_LEVEL)"
           fi
 
-        done
-
-
-        if [ "$FAIL" = "1" ]; then
           echo ""
-          echo "CRONOS detected HIGH risk change"
+
+        done  # end for FILE
+
+        # ── Final gate ────────────────────────────────────────────────────────
+        echo "=============================================================="
+        if [ "$GLOBAL_FAIL" = "1" ]; then
+          echo "  ❌ CRONOS [$MODE]: One or more files FAILED the severity gate."
+          echo "     Review the explanations above before merging."
+          echo "=============================================================="
           exit 1
+        else
+          echo "  ✅ CRONOS [$MODE]: All files passed the severity gate."
+          echo "=============================================================="
+          exit 0
         fi
-
-
-        echo ""
-        echo "CRONOS analysis passed"
