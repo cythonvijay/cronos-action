@@ -1,5 +1,5 @@
 name: 'CRONOS Code Guard'
-description: 'Enterprise-grade Python intelligence analysis — Risk, Quality, Security, Execution Prediction, AI Explanation'
+description: 'Enterprise-grade Python intelligence: Risk · Quality · Security · Severity · PR Comments · Annotations · AI Explanation'
 author: 'cythonvijay'
 branding:
   icon: 'shield'
@@ -10,13 +10,39 @@ inputs:
     description: 'CRONOS API endpoint URL'
     required: true
   mode:
-    description: 'Analysis mode: STRICT, BOUNDARY, or CONTRACT'
+    description: 'Analysis mode: STRICT | BOUNDARY | CONTRACT'
     required: false
     default: 'STRICT'
+  github_token:
+    description: 'GitHub token for PR comments and Check Run annotations'
+    required: false
+    default: ''
+  pr_number:
+    description: 'Pull request number (auto-detected if not provided)'
+    required: false
+    default: ''
+  post_pr_comment:
+    description: 'Post intelligence report as PR comment (true/false)'
+    required: false
+    default: 'true'
+  create_annotations:
+    description: 'Create GitHub Check Run with inline annotations (true/false)'
+    required: false
+    default: 'true'
+  repo:
+    description: 'Repository slug (owner/repo). Defaults to GITHUB_REPOSITORY.'
+    required: false
+    default: ''
+  fail_on_severity:
+    description: 'Minimum severity level to fail the build (CRITICAL|HIGH|MEDIUM|LOW|SAFE)'
+    required: false
+    default: 'HIGH'
 
 runs:
   using: 'composite'
   steps:
+
+    # ── Step 1: Install system dependencies ───────────────────────────────────
     - name: Install dependencies
       shell: bash
       run: |
@@ -24,11 +50,18 @@ runs:
           sudo apt-get update -qq && sudo apt-get install -y jq
         fi
 
-    - name: Run CRONOS Full Intelligence Analysis
+    # ── Step 2: Full intelligence analysis + PR comment + annotations ─────────
+    - name: Run CRONOS Enterprise Intelligence Analysis
       shell: bash
       env:
-        API_URL: ${{ inputs.api_url }}
-        MODE: ${{ inputs.mode }}
+        API_URL:            ${{ inputs.api_url }}
+        MODE:               ${{ inputs.mode }}
+        GITHUB_TOKEN_INPUT: ${{ inputs.github_token }}
+        PR_NUMBER_INPUT:    ${{ inputs.pr_number }}
+        POST_PR_COMMENT:    ${{ inputs.post_pr_comment }}
+        CREATE_ANNOTATIONS: ${{ inputs.create_annotations }}
+        REPO_INPUT:         ${{ inputs.repo }}
+        FAIL_ON_SEVERITY:   ${{ inputs.fail_on_severity }}
       run: |
         set -euo pipefail
 
@@ -36,32 +69,62 @@ runs:
         REPORT_DIR="cronos-reports"
         mkdir -p "$REPORT_DIR"
 
-        echo "╔══════════════════════════════════════════╗"
-        echo "║   CRONOS v7 — Full Intelligence Mode     ║"
-        echo "╠══════════════════════════════════════════╣"
-        echo "║  Mode : $MODE"
-        echo "║  API  : $API_URL"
-        echo "╚══════════════════════════════════════════╝"
+        # ── Resolve token ──────────────────────────────────────────────────────
+        GH_TOKEN="${GITHUB_TOKEN_INPUT:-${GITHUB_TOKEN:-}}"
+
+        # ── Resolve repo ───────────────────────────────────────────────────────
+        REPO="${REPO_INPUT:-${GITHUB_REPOSITORY:-}}"
+        OWNER="${REPO%%/*}"
+        REPO_NAME="${REPO##*/}"
+        SHA="${GITHUB_SHA:-}"
+        REF="${GITHUB_REF:-}"
+
+        # ── Resolve PR number ─────────────────────────────────────────────────
+        PR_NUMBER="${PR_NUMBER_INPUT:-}"
+        if [ -z "$PR_NUMBER" ] && [ -f "${GITHUB_EVENT_PATH:-/dev/null}" ]; then
+          PR_NUMBER=$(python3 -c "
+import json,sys
+try:
+    d=json.load(open('${GITHUB_EVENT_PATH}'))
+    pr=d.get('pull_request',{}).get('number') or d.get('number')
+    print(pr or '')
+except:
+    print('')
+" 2>/dev/null || true)
+        fi
+
+        echo "╔══════════════════════════════════════════════════════╗"
+        echo "║   CRONOS v8 — Enterprise Intelligence Mode           ║"
+        echo "╠══════════════════════════════════════════════════════╣"
+        echo "║  Mode              : $MODE"
+        echo "║  API               : $API_URL"
+        echo "║  Repo              : $REPO"
+        echo "║  SHA               : ${SHA:0:12}..."
+        echo "║  PR Number         : ${PR_NUMBER:-none}"
+        echo "║  Post PR Comment   : $POST_PR_COMMENT"
+        echo "║  Create Annotations: $CREATE_ANNOTATIONS"
+        echo "║  Fail on Severity  : $FAIL_ON_SEVERITY"
+        echo "╚══════════════════════════════════════════════════════╝"
 
         if [ -z "$API_URL" ]; then
-          echo "ERROR: api_url is empty. Check CRONOS_API_URL secret."
-          echo "## CRONOS: api_url secret is missing" >> "$GITHUB_STEP_SUMMARY"
+          echo "ERROR: api_url is empty."
+          echo "## ❌ CRONOS: api_url secret is missing" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
 
-        # ── Health check ────────────────────────────────────────────────────
+        # ── Health check ───────────────────────────────────────────────────────
         set +e
         curl -sf --max-time 15 "$API_URL/" > /dev/null 2>&1
-        HEALTH_EXIT=$?
+        HEALTH=$?
         set -e
-        if [ "$HEALTH_EXIT" -ne 0 ]; then
-          echo "ERROR: API unreachable (curl exit=$HEALTH_EXIT)"
-          echo "## CRONOS: API Unreachable at $API_URL" >> "$GITHUB_STEP_SUMMARY"
+        if [ "$HEALTH" -ne 0 ]; then
+          echo "ERROR: API unreachable (curl=$HEALTH)"
+          echo "## ❌ CRONOS: API unreachable at $API_URL" >> "$GITHUB_STEP_SUMMARY"
           exit 1
         fi
         echo "✅ API reachable"
 
-        # ── Detect changed Python files ──────────────────────────────────────
+        # ── Detect changed Python files ────────────────────────────────────────
         FILES=""
         if git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD | grep '\.py$' || true)
@@ -71,62 +134,59 @@ runs:
 
         if [ -z "$FILES" ]; then
           echo "No Python files changed."
-          echo "## CRONOS: No Python changes detected" >> "$GITHUB_STEP_SUMMARY"
+          echo "## ℹ️ CRONOS: No Python changes detected" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
 
-        echo "Files to analyse: $FILES"
+        echo "Python files to analyze: $FILES"
 
-        FAIL_COUNT=0
-        WARN_COUNT=0
-        PASS_COUNT=0
-        TOTAL=0
+        FAIL_COUNT=0; WARN_COUNT=0; PASS_COUNT=0; TOTAL=0
+        LAST_REPORT_ID=""   # tracks the most recent report_id for PR comment
+        SEVERITY_ORDER="SAFE LOW MEDIUM HIGH CRITICAL"
 
-        # ── Inline parser (base64-encoded Python) ────────────────────────────
-        # Reads the /analyze_full JSON response and:
-        #   1. Prints a full console intelligence report
-        #   2. Appends GitHub Step Summary markdown
-        #
-        # Displays all v7 fields:
-        #   Risk / Quality / Security / Overall scores
-        #   Old hash / New hash / Semantic hash
-        #   Execution prediction (outputs, state changes, exceptions)
-        #   Technical explanation / Human explanation
-        #   Risk reasoning / Behavioral impact
-        #   Download links (JSON + PDF)
-        #
-        # argv[5] = API_URL (used to build download links)
-        # Exit codes: 0 = PASS   2 = WARN   1 = FAIL
-        # ─────────────────────────────────────────────────────────────────────
-        PARSER=$(mktemp).py
-        echo "aW1wb3J0IGpzb24sc3lzLHNodXRpbCxvcwpyZXNfZixmaWxlbmFtZSxyZXBvcnRfZixzdW1tYXJ5X2Y9c3lzLmFyZ3ZbMV0sc3lzLmFyZ3ZbMl0sc3lzLmFyZ3ZbM10sc3lzLmFyZ3ZbNF0KYXBpX3VybD1zeXMuYXJndls1XSBpZiBsZW4oc3lzLmFyZ3YpPjUgZWxzZSAiIgp3aXRoIG9wZW4ocmVzX2YpIGFzIGY6CiAgICBkPWpzb24ubG9hZChmKQpzaHV0aWwuY29weShyZXNfZixyZXBvcnRfZikKCiMg4pSA4pSAIENvcmUgZmllbGRzIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgApzdGF0dXM9ZC5nZXQoInN0YXR1cyIsIkZBSUwiKTtyaXNrPWQuZ2V0KCJyaXNrIixkLmdldCgicmlza19zY29yZSIsMTAwKSkKZmluZGluZ3Nfbj1kLmdldCgiZmluZGluZ3NfY291bnQiLDApO21vZGU9ZC5nZXQoIm1vZGUiLCJVTktOT1dOIikKdGltZXN0YW1wPWQuZ2V0KCJ0aW1lc3RhbXAiLCJOL0EiKTtzdW1tYXJ5PWQuZ2V0KCJzdW1tYXJ5IixbXSkKcD1kLmdldCgicGFzcyIsRmFsc2UpO3c9ZC5nZXQoIndhcm4iLEZhbHNlKTtmYWlsPWQuZ2V0KCJmYWlsIixUcnVlKQoKIyDilIDilIAgdjcgc2NvcmVzIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgApxdWFsaXR5PWQuZ2V0KCJxdWFsaXR5X3Njb3JlIiwiTi9BIik7c2VjdXJpdHk9ZC5nZXQoInNlY3VyaXR5X3Njb3JlIiwiTi9BIikKb3ZlcmFsbD1kLmdldCgib3ZlcmFsbF9zY29yZSIsIk4vQSIpO2JlaGF2aW9yX2NoYW5nZWQ9ZC5nZXQoImJlaGF2aW9yX2NoYW5nZWQiLEZhbHNlKQpiZWhhdmlvcl9zdW1tYXJ5PWQuZ2V0KCJiZWhhdmlvcl9zdW1tYXJ5IiwiIikKYmVoPWQuZ2V0KCJiZWhhdmlvciIse30pCmlmIG5vdCBiZWhhdmlvcl9jaGFuZ2VkOmJlaGF2aW9yX2NoYW5nZWQ9YmVoLmdldCgiY2hhbmdlZCIsRmFsc2UpCmlmIG5vdCBiZWhhdmlvcl9zdW1tYXJ5OmJlaGF2aW9yX3N1bW1hcnk9YmVoLmdldCgic3VtbWFyeSIsIiIpCgojIOKUgOKUgCBIYXNoIHRyaWFkIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgApvbGRfaGFzaD1kLmdldCgib2xkX2hhc2giLCIiKTtuZXdfaGFzaD1kLmdldCgibmV3X2hhc2giLCIiKTtzZW1hbnRpY19oYXNoPWQuZ2V0KCJzZW1hbnRpY19oYXNoIiwiIikKbWV0YT1kLmdldCgibWV0YWRhdGEiLHt9KQppZiBub3Qgb2xkX2hhc2g6b2xkX2hhc2g9bWV0YS5nZXQoIm9sZF9oYXNoIiwiIikKaWYgbm90IG5ld19oYXNoOm5ld19oYXNoPW1ldGEuZ2V0KCJuZXdfaGFzaCIsIiIpCmFzdF9jaD1tZXRhLmdldCgiYXN0X2NoYW5nZWQiLE5vbmUpO3NlbWFudGljPW1ldGEuZ2V0KCJzZW1hbnRpY19kaWZmIixOb25lKQpjYXRlZ29yaWVzPW1ldGEuZ2V0KCJjYXRlZ29yaWVzX2FuYWx5emVkIiwwKTtyaXNrX2JkPW1ldGEuZ2V0KCJyaXNrX2JyZWFrZG93biIse30pCgojIOKUgOKUgCBFeGVjdXRpb24gcHJlZGljdGlvbiDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKZXhlY19wcmVkPWQuZ2V0KCJleGVjdXRpb25fcHJlZGljdGlvbiIse30pCnBvc3NpYmxlX291dHB1dHM9ZXhlY19wcmVkLmdldCgicG9zc2libGVfb3V0cHV0cyIsW10pCnN0YXRlX2NoYW5nZXM9ZXhlY19wcmVkLmdldCgic3RhdGVfY2hhbmdlcyIsW10pCmV4Y2VwdGlvbnM9ZXhlY19wcmVkLmdldCgiZXhjZXB0aW9ucyIsW10pCmNvbmY9ZXhlY19wcmVkLmdldCgiY29uZmlkZW5jZSIsMCkKCiMg4pSA4pSAIEFJIGV4cGxhbmF0aW9ucyDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKdGVjaF9leHA9ZC5nZXQoInRlY2huaWNhbF9leHBsYW5hdGlvbiIsZC5nZXQoInNlbWFudGljX2V4cGxhbmF0aW9uIiwiIikpCmh1bWFuX2V4cD1kLmdldCgiaHVtYW5fZXhwbGFuYXRpb24iLCIiKQpyaXNrX3JlYXNvbj1kLmdldCgicmlza19yZWFzb25pbmciLCIiKQpiZWhhdl9pbXBhY3Q9ZC5nZXQoImJlaGF2aW9yYWxfaW1wYWN0IiwiIikKcmVwb3J0X2lkPWQuZ2V0KCJyZXBvcnRfaWQiLCJOL0EiKQphaV9wcm92aWRlcj1kLmdldCgiYWlfcHJvdmlkZXIiLCJOL0EiKQoKIyDilIDilIAgQ29uc29sZSBvdXRwdXQg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSAClNFUD0i4pWQIio1NQpwcmludChTRVApCnByaW50KGYiICBDUk9OT1MgSW50ZWxsaWdlbmNlIFJlcG9ydCDigJQgdjciKQpwcmludChTRVApCnByaW50KGYiICBGaWxlICAgICAgICAgICA6IHtmaWxlbmFtZX0iKQpwcmludChmIiAgU3RhdHVzICAgICAgICAgOiB7c3RhdHVzfSIpCnByaW50KGYiICBNb2RlICAgICAgICAgICA6IHttb2RlfSIpCnByaW50KGYiICBUaW1lc3RhbXAgICAgICA6IHt0aW1lc3RhbXB9IikKcHJpbnQoKQpwcmludChmIiAgUmlzayBTY29yZSAgICAgOiB7cmlza30vMTAwIikKaWYgcXVhbGl0eSE9Ik4vQSI6cHJpbnQoZiIgIFF1YWxpdHkgU2NvcmUgIDoge3F1YWxpdHl9LzEwMCIpCmlmIHNlY3VyaXR5IT0iTi9BIjpwcmludChmIiAgU2VjdXJpdHkgU2NvcmUgOiB7c2VjdXJpdHl9LzEwMCIpCmlmIG92ZXJhbGwhPSJOL0EiOnByaW50KGYiICBPdmVyYWxsIFNjb3JlICA6IHtvdmVyYWxsfS8xMDAiKQpwcmludCgpCmlmIG9sZF9oYXNoOnByaW50KGYiICBPbGQgSGFzaCAgICAgICA6IHtvbGRfaGFzaFs6MjRdfS4uLiIpCmlmIG5ld19oYXNoOnByaW50KGYiICBOZXcgSGFzaCAgICAgICA6IHtuZXdfaGFzaFs6MjRdfS4uLiIpCmlmIHNlbWFudGljX2hhc2g6cHJpbnQoZiIgIFNlbWFudGljIEhhc2ggIDoge3NlbWFudGljX2hhc2hbOjI0XX0uLi4iKQppZiBhc3RfY2ggaXMgbm90IE5vbmU6cHJpbnQoZiIgIEFTVCBDaGFuZ2VkICAgIDoge2FzdF9jaH0iKQppZiBzZW1hbnRpYyBpcyBub3QgTm9uZTpwcmludChmIiAgU2VtYW50aWMgRGlmZiAgOiB7c2VtYW50aWN9IikKcHJpbnQoKQppZiBwb3NzaWJsZV9vdXRwdXRzIG9yIHN0YXRlX2NoYW5nZXMgb3IgZXhjZXB0aW9uczoKICAgIHByaW50KGYiICBFeGVjdXRpb24gUHJlZGljdGlvbiAoY29uZmlkZW5jZToge2NvbmZ9KToiKQogICAgZm9yIG8gaW4gcG9zc2libGVfb3V0cHV0c1s6NV06cHJpbnQoZiIgICAgb3V0cHV0ICDihpIge299IikKICAgIGZvciBzIGluIHN0YXRlX2NoYW5nZXNbOjRdOnByaW50KGYiICAgIHN0YXRlICAg4oaSIHtzfSIpCiAgICBmb3IgZSBpbiBleGNlcHRpb25zWzozXTpwcmludChmIiAgICByYWlzZXMgIOKGkiB7ZX0iKQogICAgcHJpbnQoKQppZiB0ZWNoX2V4cDoKICAgIHByaW50KGYiICBUZWNobmljYWwgRXhwbGFuYXRpb246IikKICAgIHdvcmRzPXRlY2hfZXhwLnNwbGl0KCkKICAgIGxpbmU9IiIKICAgIGZvciB3IGluIHdvcmRzOgogICAgICAgIGlmIGxlbihsaW5lKStsZW4odykrMT43MDpwcmludChmIiAgICB7bGluZX0iKTtsaW5lPXcKICAgICAgICBlbHNlOmxpbmU9KGxpbmUrIiAiK3cpLnN0cmlwKCkKICAgIGlmIGxpbmU6cHJpbnQoZiIgICAge2xpbmV9IikKICAgIHByaW50KCkKaWYgaHVtYW5fZXhwOgogICAgcHJpbnQoZiIgIEh1bWFuIEV4cGxhbmF0aW9uOiIpCiAgICB3b3Jkcz1odW1hbl9leHAuc3BsaXQoKQogICAgbGluZT0iIgogICAgZm9yIHcgaW4gd29yZHM6CiAgICAgICAgaWYgbGVuKGxpbmUpK2xlbih3KSsxPjcwOnByaW50KGYiICAgIHtsaW5lfSIpO2xpbmU9dwogICAgICAgIGVsc2U6bGluZT0obGluZSsiICIrdykuc3RyaXAoKQogICAgaWYgbGluZTpwcmludChmIiAgICB7bGluZX0iKQogICAgcHJpbnQoKQppZiByaXNrX3JlYXNvbjpwcmludChmIiAgUmlzayBSZWFzb25pbmcgOiB7cmlza19yZWFzb25bOjEyMF19IikKaWYgYmVoYXZfaW1wYWN0OnByaW50KGYiICBCZWhhdmlvciBJbXBhY3Q6IHtiZWhhdl9pbXBhY3RbOjEyMF19IikKaWYgYmVoYXZpb3JfY2hhbmdlZDpwcmludChmIiAgQmVoYXZpb3IgzpQgICAgIDogWUVTIOKAlCB7YmVoYXZpb3Jfc3VtbWFyeX0iKQpwcmludCgpCmlmIHN1bW1hcnk6CiAgICBwcmludCgiICBGaW5kaW5nczoiKQogICAgZm9yIGkscyBpbiBlbnVtZXJhdGUoc3VtbWFyeSwxKTpwcmludChmIiAgICB7aX0uIHtzfSIpCiAgICBwcmludCgpCmlmIHJpc2tfYmQ6CiAgICBhY3RpdmU9e2s6diBmb3Igayx2IGluIHJpc2tfYmQuaXRlbXMoKSBpZiB2PjB9CiAgICBpZiBhY3RpdmU6CiAgICAgICAgcHJpbnQoIiAgUmlzayBCcmVha2Rvd246IikKICAgICAgICBmb3IgY2F0LHZhbCBpbiBhY3RpdmUuaXRlbXMoKTpwcmludChmIiAgICAtIHtjYXQucmVwbGFjZShjaHIoOTUpLGNocigzMikpLnRpdGxlKCl9OiB7dmFsfS8xMDAiKQogICAgICAgIHByaW50KCkKaWYgcmVwb3J0X2lkIT0iTi9BIiBhbmQgYXBpX3VybDoKICAgIGJhc2U9YXBpX3VybC5yc3RyaXAoIi8iKQogICAgcHJpbnQoZiIgIERvd25sb2FkIFJlcG9ydHM6IikKICAgIHByaW50KGYiICAgIEpTT04gOiB7YmFzZX0vcmVwb3J0L2pzb24ve3JlcG9ydF9pZH0iKQogICAgcHJpbnQoZiIgICAgUERGICA6IHtiYXNlfS9yZXBvcnQvcGRmL3tyZXBvcnRfaWR9IikKICAgIHByaW50KGYiICAgIFN0b3JlOiB7YmFzZX0vcmVwb3J0L3N0b3JlL3tyZXBvcnRfaWR9IikKICAgIHByaW50KCkKcHJpbnQoU0VQKQoKIyDilIDilIAgR2l0SHViIFN0ZXAgU3VtbWFyeSDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKZW1vamk9IlxVMDAwMWY1MzQiIGlmIGZhaWwgZWxzZSgiXFUwMDAxZjdlMSIgaWYgdyBlbHNlIlxVMDAwMWY3ZTIiKQp2ZXJkaWN0PSJGQUlMIiBpZiBmYWlsIGVsc2UoIldBUk4iIGlmIHcgZWxzZSJQQVNTIikKd2l0aCBvcGVuKHN1bW1hcnlfZiwiYSIpIGFzIHNmOgogICAgc2Yud3JpdGUoZiIjIyMge2Vtb2ppfSB7dmVyZGljdH0g4oCUIGB7ZmlsZW5hbWV9YFxuXG4iKQogICAgc2Yud3JpdGUoIiMjIyMg8J+TiiBTY29yZXNcblxuIikKICAgIHNmLndyaXRlKCJ8IE1ldHJpYyB8IFNjb3JlIHxcbnwtLS18LS0tfFxuIikKICAgIHNmLndyaXRlKGYifCBSaXNrIFNjb3JlIHwgKip7cmlza30vMTAwKiogfFxuIikKICAgIGlmIHF1YWxpdHkhPSJOL0EiOnNmLndyaXRlKGYifCBRdWFsaXR5IFNjb3JlIHwgKip7cXVhbGl0eX0vMTAwKiogfFxuIikKICAgIGlmIHNlY3VyaXR5IT0iTi9BIjpzZi53cml0ZShmInwgU2VjdXJpdHkgU2NvcmUgfCAqKntzZWN1cml0eX0vMTAwKiogfFxuIikKICAgIGlmIG92ZXJhbGwhPSJOL0EiOnNmLndyaXRlKGYifCBPdmVyYWxsIFNjb3JlIHwgKip7b3ZlcmFsbH0vMTAwKiogfFxuIikKICAgIHNmLndyaXRlKGYifCBTdGF0dXMgfCAqKntzdGF0dXN9KiogfFxuIikKICAgIHNmLndyaXRlKGYifCBNb2RlIHwge21vZGV9IHxcbiIpCiAgICBzZi53cml0ZShmInwgVGltZXN0YW1wIHwge3RpbWVzdGFtcH0gfFxuXG4iKQogICAgaWYgb2xkX2hhc2ggb3IgbmV3X2hhc2ggb3Igc2VtYW50aWNfaGFzaDoKICAgICAgICBzZi53cml0ZSgiIyMjIyDwn5SQIEludGVncml0eSBIYXNoZXNcblxuIikKICAgICAgICBzZi53cml0ZSgifCBIYXNoIHwgVmFsdWUgfFxufC0tLXwtLS18XG4iKQogICAgICAgIGlmIG9sZF9oYXNoOnNmLndyaXRlKGYifCBPbGQgSGFzaCB8IGB7b2xkX2hhc2hbOjMyXX0uLi5gIHxcbiIpCiAgICAgICAgaWYgbmV3X2hhc2g6c2Yud3JpdGUoZiJ8IE5ldyBIYXNoIHwgYHtuZXdfaGFzaFs6MzJdfS4uLmAgfFxuIikKICAgICAgICBpZiBzZW1hbnRpY19oYXNoOnNmLndyaXRlKGYifCBTZW1hbnRpYyBIYXNoIHwgYHtzZW1hbnRpY19oYXNoWzozMl19Li4uYCB8XG4iKQogICAgICAgIHNmLndyaXRlKCJcbiIpCiAgICBpZiBwb3NzaWJsZV9vdXRwdXRzIG9yIHN0YXRlX2NoYW5nZXMgb3IgZXhjZXB0aW9uczoKICAgICAgICBzZi53cml0ZSgiIyMjIyDimpnvuI8gRXhlY3V0aW9uIFByZWRpY3Rpb25cblxuIikKICAgICAgICBzZi53cml0ZShmIioqQ29uZmlkZW5jZToqKiB7Y29uZn1cblxuIikKICAgICAgICBpZiBwb3NzaWJsZV9vdXRwdXRzOgogICAgICAgICAgICBzZi53cml0ZSgiKipQb3NzaWJsZSBPdXRwdXRzOioqXG4iKQogICAgICAgICAgICBmb3IgbyBpbiBwb3NzaWJsZV9vdXRwdXRzWzo1XTpzZi53cml0ZShmIi0gYHtvfWBcbiIpCiAgICAgICAgICAgIHNmLndyaXRlKCJcbiIpCiAgICAgICAgaWYgc3RhdGVfY2hhbmdlczoKICAgICAgICAgICAgc2Yud3JpdGUoIioqU3RhdGUgQ2hhbmdlczoqKlxuIikKICAgICAgICAgICAgZm9yIHMgaW4gc3RhdGVfY2hhbmdlc1s6NF06c2Yud3JpdGUoZiItIGB7c31gXG4iKQogICAgICAgICAgICBzZi53cml0ZSgiXG4iKQogICAgICAgIGlmIGV4Y2VwdGlvbnM6CiAgICAgICAgICAgIHNmLndyaXRlKCIqKkV4Y2VwdGlvbiBSaXNrczoqKlxuIikKICAgICAgICAgICAgZm9yIGUgaW4gZXhjZXB0aW9uc1s6M106c2Yud3JpdGUoZiItIOKaoO+4jyBge2V9YFxuIikKICAgICAgICAgICAgc2Yud3JpdGUoIlxuIikKICAgIGlmIHRlY2hfZXhwOgogICAgICAgIHNmLndyaXRlKCIjIyMjIPCfp6AgVGVjaG5pY2FsIEV4cGxhbmF0aW9uXG5cbiIpCiAgICAgICAgc2Yud3JpdGUoZiI+IHt0ZWNoX2V4cFs6NDAwXX1cblxuIikKICAgIGlmIGh1bWFuX2V4cDoKICAgICAgICBzZi53cml0ZSgiIyMjIyDwn5KsIEh1bWFuIEV4cGxhbmF0aW9uXG5cbiIpCiAgICAgICAgc2Yud3JpdGUoZiI+IHtodW1hbl9leHBbOjQwMF19XG5cbiIpCiAgICBpZiByaXNrX3JlYXNvbjoKICAgICAgICBzZi53cml0ZShmIioqUmlzayBSZWFzb25pbmc6Kioge3Jpc2tfcmVhc29uWzozMDBdfVxuXG4iKQogICAgaWYgYmVoYXZfaW1wYWN0OgogICAgICAgIHNmLndyaXRlKGYiKipCZWhhdmlvcmFsIEltcGFjdDoqKiB7YmVoYXZfaW1wYWN0WzozMDBdfVxuXG4iKQogICAgaWYgYmVoYXZpb3JfY2hhbmdlZDoKICAgICAgICBzZi53cml0ZShmIuKaoO+4jyAqKkJlaGF2aW9yIENoYW5nZWQ6Kioge2JlaGF2aW9yX3N1bW1hcnl9XG5cbiIpCiAgICBpZiBzdW1tYXJ5OgogICAgICAgIHNmLndyaXRlKCIjIyMjIPCfk4sgRmluZGluZ3NcblxuIikKICAgICAgICBmb3IgaSxzIGluIGVudW1lcmF0ZShzdW1tYXJ5LDEpOnNmLndyaXRlKGYie2l9LiB7c31cbiIpCiAgICAgICAgc2Yud3JpdGUoIlxuIikKICAgIGlmIHJpc2tfYmQ6CiAgICAgICAgYWN0aXZlPXtrOnYgZm9yIGssdiBpbiByaXNrX2JkLml0ZW1zKCkgaWYgdj4wfQogICAgICAgIGlmIGFjdGl2ZToKICAgICAgICAgICAgc2Yud3JpdGUoIiMjIyMgUmlzayBCcmVha2Rvd25cblxuIikKICAgICAgICAgICAgc2Yud3JpdGUoInwgQ2F0ZWdvcnkgfCBSaXNrIHxcbnwtLS18LS0tfFxuIikKICAgICAgICAgICAgZm9yIGNhdCx2YWwgaW4gYWN0aXZlLml0ZW1zKCk6c2Yud3JpdGUoZiJ8IHtjYXQucmVwbGFjZShjaHIoOTUpLGNocigzMikpLnRpdGxlKCl9IHwge3ZhbH0vMTAwIHxcbiIpCiAgICAgICAgICAgIHNmLndyaXRlKCJcbiIpCiAgICBpZiByZXBvcnRfaWQhPSJOL0EiIGFuZCBhcGlfdXJsOgogICAgICAgIGJhc2U9YXBpX3VybC5yc3RyaXAoIi8iKQogICAgICAgIHNmLndyaXRlKCIjIyMjIPCfk6UgUmVwb3J0IERvd25sb2Fkc1xuXG4iKQogICAgICAgIHNmLndyaXRlKGYiLSBb8J+ThCBKU09OIFJlcG9ydF0oe2Jhc2V9L3JlcG9ydC9qc29uL3tyZXBvcnRfaWR9KVxuIikKICAgICAgICBzZi53cml0ZShmIi0gW/Cfk4ogUERGIFJlcG9ydF0oe2Jhc2V9L3JlcG9ydC9wZGYve3JlcG9ydF9pZH0pXG5cbiIpCiAgICBpZiBhaV9wcm92aWRlciE9Ik4vQSI6c2Yud3JpdGUoZiIqQUkgUHJvdmlkZXI6IHthaV9wcm92aWRlcn0qXG5cbiIpCiAgICBzZi53cml0ZSgiLS0tXG5cbiIpCgpzeXMuZXhpdCgwIGlmIHN0YXR1cz09IlBBU1MiIGVsc2UoMiBpZiBzdGF0dXM9PSJXQVJOIiBlbHNlIDEpKQo=" | base64 -d > "$PARSER"
+        # ── Severity threshold check helper ───────────────────────────────────
+        sev_rank() {
+          case "$1" in
+            SAFE)     echo 0 ;;
+            LOW)      echo 1 ;;
+            MEDIUM)   echo 2 ;;
+            HIGH)     echo 3 ;;
+            CRITICAL) echo 4 ;;
+            *)        echo 2 ;;
+          esac
+        }
+        FAIL_RANK=$(sev_rank "$FAIL_ON_SEVERITY")
 
+        # ── Per-file analysis ─────────────────────────────────────────────────
         for file in $FILES; do
           [ ! -f "$file" ] && continue
           TOTAL=$((TOTAL + 1))
           echo ""
-          echo "══════════════════════════════════════════════"
-          echo "Analysing: $file"
-          echo "══════════════════════════════════════════════"
+          echo "══════════════════════════════════════════════════════"
+          echo "  Analyzing: $file"
+          echo "══════════════════════════════════════════════════════"
 
-          OLD_F=$(mktemp); NEW_F=$(mktemp); PAY_F=$(mktemp)
-          RES_F=$(mktemp); SCR_F=$(mktemp).py
+          OLD_F=$(mktemp); NEW_F=$(mktemp); PAY_F=$(mktemp); RES_F=$(mktemp); SCR_F=$(mktemp).py
 
+          # Get old version
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             git show HEAD~1:"$file" > "$OLD_F" 2>/dev/null || true
           fi
           cp "$file" "$NEW_F"
 
-          # Build JSON payload
-          printf 'import json\n'                                             > "$SCR_F"
-          printf 'o=open("%s").read()\n'                       "$OLD_F"    >> "$SCR_F"
-          printf 'n=open("%s").read()\n'                       "$NEW_F"    >> "$SCR_F"
-          printf 'p={"old_code":o,"new_code":n,"mode":"%s"}\n' "$MODE"    >> "$SCR_F"
-          printf 'open("%s","w").write(json.dumps(p))\n'       "$PAY_F"   >> "$SCR_F"
-          python3 "$SCR_F"
+          # Build JSON payload (includes repo, file, sha for DB + PR)
+          cat > "$SCR_F" << 'PYEOF'
+import json, sys
+old_f, new_f, pay_f, mode, repo, file_, sha = sys.argv[1:]
+o = open(old_f).read()
+n = open(new_f).read()
+p = {"old_code": o, "new_code": n, "mode": mode, "repo": repo, "file": file_}
+open(pay_f, "w").write(json.dumps(p))
+PYEOF
+          python3 "$SCR_F" "$OLD_F" "$NEW_F" "$PAY_F" "$MODE" "$REPO" "$file" "$SHA"
           rm -f "$OLD_F" "$NEW_F" "$SCR_F"
 
-          # Call /analyze_full (not /analyze_ci)
+          # Call /analyze_full
           set +e
           HTTP=$(curl -s -w "%{http_code}" -o "$RES_F" \
             -X POST "$API_URL/analyze_full" \
@@ -138,62 +198,167 @@ runs:
           set -e
           rm -f "$PAY_F"
 
-          echo "HTTP=$HTTP curl_exit=$CE"
+          echo "  HTTP=$HTTP curl=$CE"
           REPORT="$REPORT_DIR/$(echo "$file" | tr '/' '_').json"
 
-          if [ "$CE" -ne 0 ]; then
-            printf '{"status":"FAIL","risk":100,"findings_count":1,"summary":["curl error %s"],"pass":false,"warn":false,"fail":true}\n' "$CE" > "$REPORT"
-            rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
-          fi
-          if [ "$HTTP" != "200" ]; then
-            printf '{"status":"FAIL","risk":100,"findings_count":1,"summary":["HTTP error %s"],"pass":false,"warn":false,"fail":true}\n' "$HTTP" > "$REPORT"
+          # Handle curl / HTTP errors
+          if [ "$CE" -ne 0 ] || [ "$HTTP" != "200" ]; then
+            printf '{"status":"FAIL","risk_score":100,"severity":"CRITICAL","findings_count":1,"summary":["API error HTTP=%s curl=%s"],"pass":false,"warn":false,"fail":true}\n' "$HTTP" "$CE" > "$REPORT"
             rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
           fi
 
           SZ=$(wc -c < "$RES_F" 2>/dev/null || echo 0)
-          if [ "$SZ" -eq 0 ]; then
-            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["empty response"],"pass":false,"warn":false,"fail":true}' > "$REPORT"
+          if [ "$SZ" -eq 0 ] || ! python3 -c "import json,sys; json.load(open('$RES_F'))" 2>/dev/null; then
+            echo '{"status":"FAIL","risk_score":100,"severity":"CRITICAL","findings_count":1,"summary":["Invalid response"],"pass":false,"warn":false,"fail":true}' > "$REPORT"
             rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
           fi
 
-          if ! python3 -c "import json,sys; json.load(open('$RES_F'))" 2>/dev/null; then
-            echo '{"status":"FAIL","risk":100,"findings_count":1,"summary":["invalid JSON"],"pass":false,"warn":false,"fail":true}' > "$REPORT"
-            rm -f "$RES_F"; FAIL_COUNT=$((FAIL_COUNT+1)); continue
+          cp "$RES_F" "$REPORT"
+
+          # ── Extract fields ────────────────────────────────────────────────
+          STATUS=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('status','FAIL'))")
+          SEVERITY=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('severity','UNKNOWN'))")
+          RISK=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('risk_score',d.get('risk',0)))")
+          SECURITY=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('security_score','N/A'))")
+          OVERALL=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('overall_score','N/A'))")
+          QUALITY=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('quality_score','N/A'))")
+          REPORT_ID=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('report_id','N/A'))")
+          TECH_EXP=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('technical_explanation','')[:200])")
+          HUMAN_EXP=$(python3 -c "import json; d=json.load(open('$REPORT')); print(d.get('human_explanation','')[:200])")
+          BEH_CHANGED=$(python3 -c "import json; d=json.load(open('$REPORT')); b=d.get('behavior',{}); print('YES' if b.get('changed') else 'NO')")
+          SEV_RANK=$(sev_rank "$SEVERITY")
+          # Track latest report ID so the dedicated PR comment step can use it
+          if [ "$REPORT_ID" != "N/A" ] && [ -n "$REPORT_ID" ]; then
+            LAST_REPORT_ID="$REPORT_ID"
           fi
 
-          set +e
-          python3 "$PARSER" "$RES_F" "$file" "$REPORT" "$GITHUB_STEP_SUMMARY" "$API_URL"
-          PY_EXIT=$?
-          set -e
+          echo "  Status   : $STATUS"
+          echo "  Severity : $SEVERITY"
+          echo "  Risk     : $RISK/100"
+          echo "  Security : $SECURITY/100"
+          echo "  Overall  : $OVERALL/100"
+          echo "  Behavior : Changed=$BEH_CHANGED"
+
+          # ── Create Check Run annotations (Feature 2) ──────────────────────
+          if [ "$CREATE_ANNOTATIONS" = "true" ] && [ -n "$GH_TOKEN" ] && [ -n "$SHA" ] && [ -n "$OWNER" ]; then
+            echo "  🔍 Creating Check Run annotations..."
+            set +e
+            curl -sf -X POST "$API_URL/github/check_run" \
+              -H "Content-Type: application/json" \
+              -d "{\"report_id\":\"$REPORT_ID\",\"sha\":\"$SHA\",\"owner\":\"$OWNER\",\"repo\":\"$REPO_NAME\",\"filename\":\"$file\",\"github_token\":\"$GH_TOKEN\"}" \
+              > /dev/null 2>&1
+            set -e
+            echo "  ✅ Check Run created"
+          fi
+
+          # ── Write GitHub Step Summary ─────────────────────────────────────
+          SEV_EMOJI=""
+          case "$SEVERITY" in
+            CRITICAL) SEV_EMOJI="🔴" ;;
+            HIGH)     SEV_EMOJI="🟠" ;;
+            MEDIUM)   SEV_EMOJI="🟡" ;;
+            LOW)      SEV_EMOJI="🔵" ;;
+            SAFE)     SEV_EMOJI="🟢" ;;
+            *)        SEV_EMOJI="⚪" ;;
+          esac
+
+          {
+            echo "### ${SEV_EMOJI} ${SEVERITY} — \`${file}\`"
+            echo ""
+            echo "| Metric | Score |"
+            echo "|---|---|"
+            echo "| Risk Score | **${RISK}/100** |"
+            echo "| Security Score | **${SECURITY}/100** |"
+            echo "| Quality Score | **${QUALITY}/100** |"
+            echo "| Overall Score | **${OVERALL}/100** |"
+            echo "| Status | **${STATUS}** |"
+            echo "| Severity | **${SEVERITY}** |"
+            echo "| Behavior Changed | **${BEH_CHANGED}** |"
+            echo ""
+            if [ -n "$TECH_EXP" ]; then
+              echo "#### 🧠 Technical Explanation"
+              echo "> ${TECH_EXP}"
+              echo ""
+            fi
+            if [ -n "$HUMAN_EXP" ]; then
+              echo "#### 💬 Human Explanation"
+              echo "> ${HUMAN_EXP}"
+              echo ""
+            fi
+            if [ -n "$REPORT_ID" ] && [ "$REPORT_ID" != "N/A" ]; then
+              echo "#### 📥 Report Downloads"
+              echo "- [📄 JSON Report](${API_URL}/report/json/${REPORT_ID})"
+              echo "- [📊 PDF Report](${API_URL}/report/pdf/${REPORT_ID})"
+              echo ""
+            fi
+            echo "---"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
           rm -f "$RES_F"
 
-          if   [ "$PY_EXIT" -eq 0 ]; then PASS_COUNT=$((PASS_COUNT+1))
-          elif [ "$PY_EXIT" -eq 2 ]; then WARN_COUNT=$((WARN_COUNT+1))
-          else                             FAIL_COUNT=$((FAIL_COUNT+1))
+          # ── Verdict ───────────────────────────────────────────────────────
+          if [ "$SEV_RANK" -ge "$FAIL_RANK" ]; then
+            FAIL_COUNT=$((FAIL_COUNT+1))
+          elif [ "$STATUS" = "WARN" ]; then
+            WARN_COUNT=$((WARN_COUNT+1))
+          else
+            PASS_COUNT=$((PASS_COUNT+1))
           fi
         done
 
-        rm -f "$PARSER"
+        # ── Post CRONOS PR Comment (Feature 1) ───────────────────────────────
+        # Runs once after all files are analysed, using the last report ID.
+        # Explicit dedicated step — never buried or silent.
+        if [ "$POST_PR_COMMENT" = "true" ] \
+           && [ -n "$GH_TOKEN" ] \
+           && [ -n "$PR_NUMBER" ] \
+           && [ -n "$OWNER" ] \
+           && [ -n "$LAST_REPORT_ID" ]; then
+          echo ""
+          echo "📝 Posting CRONOS PR comment (report=$LAST_REPORT_ID)..."
+          set +e
+          PR_RESP=$(curl -s -w "\n%{http_code}" -X POST "$API_URL/github/pr_comment" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"report_id\":    \"$LAST_REPORT_ID\",
+              \"pr_number\":    $PR_NUMBER,
+              \"owner\":        \"$OWNER\",
+              \"repo\":         \"$REPO_NAME\",
+              \"github_token\": \"$GH_TOKEN\"
+            }")
+          PR_HTTP=$(echo "$PR_RESP" | tail -1)
+          set -e
+          if [ "$PR_HTTP" = "200" ]; then
+            echo "✅ PR comment posted successfully"
+          else
+            echo "⚠️  PR comment returned HTTP $PR_HTTP (non-fatal)"
+          fi
+        fi
 
+        # ── Final summary ─────────────────────────────────────────────────────
         echo ""
-        echo "══════════════════════════════════════════════"
-        echo "Total=$TOTAL  Pass=$PASS_COUNT  Warn=$WARN_COUNT  Fail=$FAIL_COUNT"
-        echo "══════════════════════════════════════════════"
+        echo "══════════════════════════════════════════════════════"
+        echo "  CRONOS v8 — Final Gate Results"
+        echo "  Total=$TOTAL  Pass=$PASS_COUNT  Warn=$WARN_COUNT  Fail=$FAIL_COUNT"
+        echo "══════════════════════════════════════════════════════"
 
         {
           echo "---"
-          echo "## CRONOS v7 — Final Summary"
+          echo "## 🏁 CRONOS v8 — Final Summary"
           echo ""
           echo "| Result | Count |"
           echo "|---|---|"
-          echo "| ✅ Passed | $PASS_COUNT |"
-          echo "| ⚠️ Warned | $WARN_COUNT |"
+          echo "| 🟢 Passed | $PASS_COUNT |"
+          echo "| 🟡 Warned | $WARN_COUNT |"
           echo "| 🔴 Failed | $FAIL_COUNT |"
           echo "| Total     | $TOTAL |"
+          echo ""
+          echo "_Fail threshold: **${FAIL_ON_SEVERITY}** severity or above_"
         } >> "$GITHUB_STEP_SUMMARY"
 
         if [ "$FAIL_COUNT" -gt 0 ]; then
-          echo "🔴 BUILD BLOCKED — $FAIL_COUNT file(s) failed CRONOS intelligence gate"
+          echo "🔴 BUILD BLOCKED — $FAIL_COUNT file(s) exceeded severity threshold ($FAIL_ON_SEVERITY)"
           exit 1
         fi
         echo "✅ BUILD APPROVED — all files passed CRONOS intelligence gate"
