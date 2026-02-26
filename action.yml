@@ -2,7 +2,7 @@ name: "CRONOS Enterprise Intelligence"
 
 description: >
   CRONOS Enterprise Code Intelligence Engine.
-  Performs fast CI gate analysis and optional full AI intelligence analysis.
+  Performs fast CI gate analysis and full AI intelligence analysis.
 
 author: "CRONOS"
 
@@ -13,43 +13,34 @@ branding:
 inputs:
 
   api_url:
-    description: "CRONOS API URL"
     required: true
 
   mode:
-    description: "Analysis mode: STRICT, BOUNDARY, CONTRACT"
     required: true
     default: "STRICT"
 
   repo:
-    description: "Repository name"
     required: false
 
   github_token:
-    description: "GitHub token"
     required: false
 
   pr_number:
-    description: "Pull request number"
     required: false
 
   post_pr_comment:
-    description: "Post PR comment with intelligence"
     required: false
     default: "false"
 
   create_annotations:
-    description: "Create GitHub annotations"
     required: false
     default: "true"
 
   fail_on_severity:
-    description: "Fail threshold: CRITICAL, HIGH, MEDIUM, LOW, SAFE"
     required: false
     default: "HIGH"
 
   full_analysis:
-    description: "Run full AI intelligence analysis"
     required: false
     default: "false"
 
@@ -64,10 +55,11 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y jq curl
 
-    - name: Run CRONOS Intelligence
+    - name: Run CRONOS Enterprise Intelligence
       shell: bash
       run: |
-        set -euo pipefail
+
+        set -eo pipefail
 
         API="${{ inputs.api_url }}"
         MODE="${{ inputs.mode }}"
@@ -76,14 +68,18 @@ runs:
         PR="${{ inputs.pr_number }}"
         FULL="${{ inputs.full_analysis }}"
         FAIL_LEVEL="${{ inputs.fail_on_severity }}"
+        CREATE_ANNOT="${{ inputs.create_annotations }}"
+        POST_COMMENT="${{ inputs.post_pr_comment }}"
 
         mkdir -p cronos-reports
 
-        echo "==========================================="
+        echo ""
+        echo "=============================================="
         echo "CRONOS v8 Enterprise Intelligence Engine"
         echo "Mode: $MODE"
         echo "Full Analysis: $FULL"
-        echo "==========================================="
+        echo "Repository: $REPO"
+        echo "=============================================="
 
         FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.py$' || true)
 
@@ -126,45 +122,90 @@ runs:
 
           fi
 
+
           echo "$RESPONSE" > cronos-reports/$(basename $FILE).json
 
           STATUS=$(echo "$RESPONSE" | jq -r '.status')
           SEVERITY=$(echo "$RESPONSE" | jq -r '.severity')
           RISK=$(echo "$RESPONSE" | jq -r '.risk_score')
 
-          echo "Status: $STATUS  Severity: $SEVERITY  Risk: $RISK"
+          TECH=$(echo "$RESPONSE" | jq -r '.technical_explanation // empty')
+          HUMAN=$(echo "$RESPONSE" | jq -r '.human_explanation // empty')
+          REASON=$(echo "$RESPONSE" | jq -r '.risk_reasoning // empty')
+          IMPACT=$(echo "$RESPONSE" | jq -r '.behavioral_impact // empty')
 
+          echo ""
+          echo "Result:"
+          echo "Status   : $STATUS"
+          echo "Severity : $SEVERITY"
+          echo "Risk     : $RISK"
+
+
+          # PRINT AI EXPLANATION (THIS WAS MISSING)
+          if [ "$FULL" = "true" ]; then
+
+            echo ""
+            echo "Technical Explanation:"
+            echo "$TECH"
+
+            echo ""
+            echo "Human Explanation:"
+            echo "$HUMAN"
+
+            echo ""
+            echo "Risk Reasoning:"
+            echo "$REASON"
+
+            echo ""
+            echo "Behavior Impact:"
+            echo "$IMPACT"
+
+          fi
+
+
+          # CREATE ANNOTATIONS
+          if [ "$CREATE_ANNOT" = "true" ] && [ "$STATUS" = "FAIL" ]; then
+
+            echo "::error file=$FILE,title=CRONOS Intelligence::$HUMAN"
+
+          fi
+
+
+          # POST PR COMMENT
+          if [ "$FULL" = "true" ] && \
+             [ "$POST_COMMENT" = "true" ] && \
+             [ "$PR" != "" ] && \
+             [ "$TOKEN" != "" ]; then
+
+            REPORT_ID=$(echo "$RESPONSE" | jq -r '.report_id')
+
+            curl -s -X POST "$API/github/pr_comment" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n \
+                --arg id "$REPORT_ID" \
+                --arg pr "$PR" \
+                --arg repo "$REPO" \
+                --arg token "$TOKEN" \
+                '{report_id:$id,pr_number:($pr|tonumber),repo:$repo,github_token:$token}')"
+
+          fi
+
+
+          # FAIL GATE
           if [ "$SEVERITY" = "$FAIL_LEVEL" ] || \
              [ "$SEVERITY" = "CRITICAL" ]; then
               FAIL=1
           fi
 
-          if [ "$FULL" = "true" ]; then
-
-            REPORT_ID=$(echo "$RESPONSE" | jq -r '.report_id')
-
-            if [ "$PR" != "null" ] && [ -n "$TOKEN" ]; then
-
-              curl -s -X POST "$API/github/pr_comment" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -n \
-                  --arg id "$REPORT_ID" \
-                  --arg pr "$PR" \
-                  --arg repo "$REPO" \
-                  --arg token "$TOKEN" \
-                  '{report_id:$id,pr_number:($pr|tonumber),repo:$repo,github_token:$token}')"
-
-            fi
-
-          fi
-
         done
+
 
         if [ "$FAIL" = "1" ]; then
           echo ""
-          echo "CRONOS detected HIGH risk changes"
+          echo "CRONOS detected HIGH risk change"
           exit 1
         fi
+
 
         echo ""
         echo "CRONOS analysis passed"
