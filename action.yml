@@ -91,11 +91,12 @@ runs:
         echo "API OK"
 
         # ── Detect changed files (ALL files, no extension filter) ─────────
-        # fetch-depth:0 ensures full history is available
-        # We detect every file that changed — not just .py
-        # This is the CORE fix: testcase, testcase2.py, age.py — ALL caught
         FILES=""
-        if git rev-parse HEAD~1 >/dev/null 2>&1; then
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+          # For PRs, diff against the base branch
+          git fetch origin "${GITHUB_BASE_REF}" --depth=1
+          FILES=$(git diff --name-only origin/${GITHUB_BASE_REF} HEAD 2>/dev/null || true)
+        elif git rev-parse HEAD~1 >/dev/null 2>&1; then
           FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
         else
           # First commit — analyze all tracked files
@@ -135,7 +136,9 @@ runs:
 
           # Get old version (before this commit)
           OLD_CODE=""
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+          if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+             OLD_CODE=$(git show origin/${GITHUB_BASE_REF}:"$FILE" 2>/dev/null || echo "")
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
             OLD_CODE=$(git show HEAD~1:"$FILE" 2>/dev/null || echo "")
           fi
 
@@ -195,16 +198,16 @@ runs:
           cp "$RES_F" "$REPORT"; rm -f "$RES_F"
 
           # Extract all fields
-          STATUS=$(jq -r    '.status          // "FAIL"'    "$REPORT")
+          STATUS=$(jq -r    '.status         // "FAIL"'    "$REPORT")
           SEVERITY=$(jq -r  '.severity        // "UNKNOWN"' "$REPORT")
-          RISK=$(jq -r      '.risk_score // .risk // 0'     "$REPORT")
-          SECURITY=$(jq -r  '.security_score  // "N/A"'     "$REPORT")
-          QUALITY=$(jq -r   '.quality_score   // "N/A"'     "$REPORT")
-          OVERALL=$(jq -r   '.overall_score   // "N/A"'     "$REPORT")
-          REPORT_ID=$(jq -r '.report_id       // ""'        "$REPORT")
-          OLD_HASH=$(jq -r  '.old_hash        // ""'        "$REPORT")
-          NEW_HASH=$(jq -r  '.new_hash        // ""'        "$REPORT")
-          SEM_HASH=$(jq -r  '.semantic_hash   // ""'        "$REPORT")
+          RISK=$(jq -r      '.risk_score // .risk // 0'      "$REPORT")
+          SECURITY=$(jq -r  '.security_score  // "N/A"'      "$REPORT")
+          QUALITY=$(jq -r   '.quality_score   // "N/A"'      "$REPORT")
+          OVERALL=$(jq -r   '.overall_score   // "N/A"'      "$REPORT")
+          REPORT_ID=$(jq -r '.report_id       // ""'         "$REPORT")
+          OLD_HASH=$(jq -r  '.old_hash        // ""'         "$REPORT")
+          NEW_HASH=$(jq -r  '.new_hash        // ""'         "$REPORT")
+          SEM_HASH=$(jq -r  '.semantic_hash   // ""'         "$REPORT")
           TECH=$(jq -r      '.technical_explanation // ""'  "$REPORT")
           HUMAN=$(jq -r     '.human_explanation     // ""'  "$REPORT")
           REASON=$(jq -r    '.risk_reasoning        // ""'  "$REPORT")
@@ -213,7 +216,7 @@ runs:
           BEH_CHG=$(jq -r   '.behavior.changed      // false' "$REPORT")
           BEH_SUM=$(jq -r   '.behavior.summary      // ""'  "$REPORT")
           CACHE_HIT=$(jq -r '.cache_hit             // false' "$REPORT")
-          FINDINGS=$(jq -r  '.summary[]?'                    "$REPORT" | head -5 || true)
+          FINDINGS=$(jq -r  '.summary[]?'                   "$REPORT" | head -5 || true)
 
           [ -n "$REPORT_ID" ] && [ "$REPORT_ID" != "null" ] && LAST_REPORT_ID="$REPORT_ID"
 
